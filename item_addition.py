@@ -1,393 +1,436 @@
 import pandas as pd
 import numpy as np
-import utils as ut
 
-class ItemDataCreator:
-    def __init__(self, item_data_path, display_data_path, sales_data_path, shelf_capacity=1000, min_spacing=5, max_spacing=20):
-        # item_data_path：商品数据文件路径，即ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv
-        # current_display_data_path：当前陈列数据文件路径，可将pog_result.csv用于测试
-        # sales_data_path: 销售数据文件路径，即sales_item_sum.csv
-        # shelf_capacity: 货架容量
-        
-        self.item_data_path = pd.read_csv(item_data_path)
-        self.display_data_path = pd.read_csv(display_data_path)
-        self.sales_data = pd.read_csv(sales_data_path)
-        self.shelf_capacity = shelf_capacity
-        self.min_spacing = min_spacing
-        self.max_spacing = max_spacing
-        
-        # 模拟商品分组层级数据（实际应用中应从数据库获取）
-        self.product_hierarchy = self._generate_hierarchy_data()
-        
-        # 模拟货架布局数据（实际应用中应从数据库获取）
-        self.shelf_layout = self._generate_shelf_layout()
-        
-        # 固定删除规则SKU列表（实际应用中应从配置获取）
-        self.fixed_removal_skus = ['101429421', '101439625']  # 示例SKU
+def add_item_func(var_dict):
+    """
+    新增一个品，旧品不动 - 场景函数
     
-    def _generate_hierarchy_data(self):
-        """生成模拟的商品分组层级数据"""
-        hierarchy = {}
-        for item_code in self.sales_data['item_code']:
-            # 模拟分组层级：部门->大类->中类->小类
-            dept = str(item_code)[:3] + '00'
-            category = str(item_code)[:4] + '0'
-            sub_category = str(item_code)[:5]
-            item_class = str(item_code)
-            
-            hierarchy[item_code] = {
-                'department': dept,
-                'category': category,
-                'sub_category': sub_category,
-                'item_class': item_class,
-                'levels': ['department', 'category', 'sub_category', 'item_class']
-            }
-        return hierarchy
+    参数:
+    var_dict: 包含基础数据和函数参数的字典
     
-    def _generate_shelf_layout(self):
-        """生成模拟的货架布局数据"""
-        layout = {}
+    返回:
+    dict: 包含新pog_data和状态信息的字典
+    """
+    try:
+        # 从var_dict中获取基础数据
+        bases_data = var_dict['bases_data']
+        pog_data = bases_data['pog_data'].copy()
+        tray_item = bases_data['tray_item']
+        item_attributes = bases_data['item_attributes']
+        sales_data = bases_data['sales_data']
+        brand_hierarchy = bases_data['brand_hierarchy']
         
-        # 模拟多个货架
-        for shelf_id in range(1, 6):
-            layout[f'shelf_{shelf_id}'] = {}
-            
-            # 每个货架有3-5层
-            for layer_id in range(1, np.random.randint(3, 6)):
-                layout[f'shelf_{shelf_id}'][f'layer_{layer_id}'] = {
-                    'capacity': self.shelf_capacity,
-                    'current_products': [],
-                    'current_spacing': self.max_spacing,
-                    'used_capacity': 0,
-                    'hierarchy_groups': set()
-                }
+        # 从var_dict中获取即将添加的商品编号
+        add_item = var_dict['add_item']
         
-        # 随机分配一些商品到货架
-        sample_products = self.sales_data['item_code'].sample(min(100, len(self.sales_data))).tolist()
-        
-        for product in sample_products:
-            shelf_id = f'shelf_{np.random.randint(1, 6)}'
-            layer_id = f'layer_{np.random.randint(1, len(layout[shelf_id]) + 1)}'
-            
-            product_size = np.random.randint(10, 50)  # 模拟商品尺寸
-            facing = 1  # 初始排面数
-            
-            layout[shelf_id][layer_id]['current_products'].append({
-                'item_code': product,
-                'size': product_size,
-                'facing': facing,
-                'sales': self.sales_data[self.sales_data['item_code'] == product]['sales'].values[0]
-            })
-            
-            layout[shelf_id][layer_id]['used_capacity'] += product_size * facing
-            layout[shelf_id][layer_id]['hierarchy_groups'].add(
-                self.product_hierarchy[product]['department']
-            )
-        
-        return layout
-    
-    def find_display_position(self, new_product_code):
-        """
-        为新商品寻找陈列位置
-        
-        参数:
-        - new_product_code: 新商品编码
-        
-        返回:
-        - 目标货架和层信息
-        """
-        if new_product_code not in self.product_hierarchy:
-            raise ValueError(f"商品 {new_product_code} 未找到分组信息")
-        
-        new_product_hierarchy = self.product_hierarchy[new_product_code]
-        
-        # 从最小层级开始向上寻找匹配的陈列位置
-        for level in reversed(new_product_hierarchy['levels']):
-            target_group = new_product_hierarchy[level]
-            
-            print(f"在层级 {level} 寻找分组 {target_group} 的陈列位置...")
-            
-            for shelf_id, shelf_data in self.shelf_layout.items():
-                for layer_id, layer_data in shelf_data.items():
-                    # 检查该层是否有相同分组的商品
-                    if any(target_group in str(group) for group in layer_data['hierarchy_groups']):
-                        print(f"找到匹配位置: {shelf_id} - {layer_id}")
-                        return {
-                            'shelf_id': shelf_id,
-                            'layer_id': layer_id,
-                            'layer_data': layer_data,
-                            'matched_level': level
-                        }
-        
-        # 如果所有层级都没找到，使用第一个可用的位置
-        for shelf_id, shelf_data in self.shelf_layout.items():
-            for layer_id, layer_data in shelf_data.items():
-                if layer_data['used_capacity'] < layer_data['capacity']:
-                    print(f"未找到匹配分组，使用可用位置: {shelf_id} - {layer_id}")
-                    return {
-                        'shelf_id': shelf_id,
-                        'layer_id': layer_id,
-                        'layer_data': layer_data,
-                        'matched_level': 'any'
-                    }
-        
-        raise Exception("没有可用的陈列位置")
-    
-    def calculate_required_space(self, new_product_size, facing=1):
-        """计算商品所需空间"""
-        return new_product_size * facing + self.min_spacing
-    
-    def adjust_spacing(self, layer_data, new_product_size):
-        """
-        调整商品间距以容纳新商品
-        
-        参数:
-        - layer_data: 层数据
-        - new_product_size: 新商品尺寸
-        
-        返回:
-        - 是否调整成功
-        - 调整后的层数据
-        """
-        required_space = self.calculate_required_space(new_product_size)
-        available_space = layer_data['capacity'] - layer_data['used_capacity']
-        
-        print(f"所需空间: {required_space}, 可用空间: {available_space}")
-        
-        # 如果当前可用空间足够
-        if available_space >= required_space:
-            return True, layer_data
-        
-        # 尝试调整间距
-        current_spacing = layer_data['current_spacing']
-        product_count = len(layer_data['current_products'])
-        
-        for new_spacing in range(current_spacing - 1, self.min_spacing - 1, -1):
-            spacing_saved = (current_spacing - new_spacing) * product_count
-            new_available_space = available_space + spacing_saved
-            
-            print(f"调整间距从 {current_spacing} 到 {new_spacing}, 节省空间: {spacing_saved}")
-            
-            if new_available_space >= required_space:
-                layer_data['current_spacing'] = new_spacing
-                layer_data['used_capacity'] -= spacing_saved
-                return True, layer_data
-        
-        return False, layer_data
-    
-    def find_double_facing_products(self, layer_data):
-        """找出有double facing的商品并按销售额排序"""
-        double_facing_products = [
-            p for p in layer_data['current_products'] 
-            if p['facing'] > 1
-        ]
-        
-        # 按销售额从低到高排序
-        return sorted(double_facing_products, key=lambda x: x['sales'])
-    
-    def remove_low_sales_double_facing(self, layer_data, required_space):
-        """
-        移除销售额低的double facing商品
-        
-        参数:
-        - layer_data: 层数据
-        - required_space: 所需空间
-        
-        返回:
-        - 是否移除成功
-        - 更新后的层数据
-        """
-        double_facing_products = self.find_double_facing_products(layer_data)
-        
-        for product in double_facing_products:
-            # 减少一个排面
-            space_freed = product['size']
-            product['facing'] -= 1
-            
-            layer_data['used_capacity'] -= space_freed
-            available_space = layer_data['capacity'] - layer_data['used_capacity']
-            
-            print(f"减少商品 {product['item_code']} 的排面，释放空间: {space_freed}")
-            
-            if available_space >= required_space:
-                return True, layer_data
-        
-        return False, layer_data
-    
-    def remove_fixed_skus(self, layer_data, required_space):
-        """
-        按照固定规则删除SKU
-        
-        参数:
-        - layer_data: 层数据
-        - required_space: 所需空间
-        
-        返回:
-        - 是否删除成功
-        - 更新后的层数据
-        """
-        removable_products = [
-            p for p in layer_data['current_products'] 
-            if str(p['item_code']) in self.fixed_removal_skus
-        ]
-        
-        # 按销售额从低到高排序
-        removable_products.sort(key=lambda x: x['sales'])
-        
-        for product in removable_products:
-            space_freed = product['size'] * product['facing'] + self.min_spacing
-            layer_data['current_products'].remove(product)
-            layer_data['used_capacity'] -= space_freed
-            layer_data['hierarchy_groups'] = set(
-                self.product_hierarchy[p['item_code']]['department'] 
-                for p in layer_data['current_products']
-            )
-            
-            available_space = layer_data['capacity'] - layer_data['used_capacity']
-            
-            print(f"删除商品 {product['item_code']}，释放空间: {space_freed}")
-            
-            if available_space >= required_space:
-                return True, layer_data
-        
-        return False, layer_data
-    
-    def add_new_product(self, new_product_code, new_product_size=30):
-        """
-        添加新商品到陈列
-        
-        参数:
-        - new_product_code: 新商品编码
-        - new_product_size: 新商品尺寸（默认为30）
-        
-        返回:
-        - 操作结果
-        """
-        print(f"开始处理新商品 {new_product_code} 的陈列...")
-        
-        try:
-            # 1. 寻找陈列位置
-            position_info = self.find_display_position(new_product_code)
-            shelf_id = position_info['shelf_id']
-            layer_id = position_info['layer_id']
-            layer_data = position_info['layer_data']
-            
-            print(f"确定陈列位置: {shelf_id} - {layer_id}")
-            
-            # 2. 计算所需空间
-            required_space = self.calculate_required_space(new_product_size)
-            print(f"新商品所需空间: {required_space}")
-            
-            # 3. 尝试调整间距
-            success, updated_layer_data = self.adjust_spacing(layer_data, new_product_size)
-            
-            if success:
-                print("通过调整间距成功获得空间")
-                layer_data = updated_layer_data
-            else:
-                print("调整间距后空间仍不足，尝试处理double facing商品...")
-                
-                # 4. 尝试移除double facing商品
-                success, updated_layer_data = self.remove_low_sales_double_facing(
-                    layer_data, required_space
-                )
-                
-                if success:
-                    print("通过减少double facing商品排面成功获得空间")
-                    layer_data = updated_layer_data
-                else:
-                    print("无double facing商品或空间仍不足，尝试删除固定SKU...")
-                    
-                    # 5. 尝试删除固定SKU
-                    success, updated_layer_data = self.remove_fixed_skus(
-                        layer_data, required_space
-                    )
-                    
-                    if success:
-                        print("通过删除固定SKU成功获得空间")
-                        layer_data = updated_layer_data
-                    else:
-                        raise Exception("陈列空间不足，无法安置新商品")
-            
-            # 添加新商品
-            new_product_sales = self.sales_data[
-                self.sales_data['item_code'] == new_product_code
-            ]['sales'].values[0] if new_product_code in self.sales_data['item_code'].values else 0
-            
-            layer_data['current_products'].append({
-                'item_code': new_product_code,
-                'size': new_product_size,
-                'facing': 1,
-                'sales': new_product_sales
-            })
-            
-            layer_data['used_capacity'] += required_space
-            layer_data['hierarchy_groups'].add(
-                self.product_hierarchy[new_product_code]['department']
-            )
-            
-            # 更新货架布局
-            self.shelf_layout[shelf_id][layer_id] = layer_data
-            
-            result = {
-                'success': True,
-                'message': f"成功将商品 {new_product_code} 陈列在 {shelf_id} - {layer_id}",
-                'position': {
-                    'shelf': shelf_id,
-                    'layer': layer_id,
-                    'matched_level': position_info['matched_level']
-                },
-                'remaining_capacity': layer_data['capacity'] - layer_data['used_capacity']
-            }
-            
-            print(result['message'])
-            return result
-            
-        except Exception as e:
-            error_msg = f"添加商品 {new_product_code} 失败: {str(e)}"
-            print(error_msg)
+        # Step1：检查是否为托盘商品
+        if check_tray_item(add_item, tray_item):
             return {
-                'success': False,
-                'message': error_msg
+                'pog_data': pog_data,
+                'status': 'fail',
+                'error_msg': f'新增的商品 {add_item} 是托盘商品，不能在商品区域陈列'
             }
-    
-    def get_shelf_status(self, shelf_id=None):
-        """获取货架状态"""
-        if shelf_id:
-            return self.shelf_layout.get(shelf_id, {})
+        
+        # Step2：定位商品位置
+        position_result = locate_item_position(add_item, pog_data, item_attributes, brand_hierarchy, sales_data)
+        if not position_result['success']:
+            return {
+                'pog_data': pog_data,
+                'status': 'fail',
+                'error_msg': position_result['error_msg']
+            }
+        
+        target_module = position_result['module']
+        target_layer = position_result['layer']
+        item_width = position_result['item_width']
+        
+        # Step3：尝试在目标层插入商品
+        insert_result = insert_item_to_target_layer(
+            pog_data, add_item, item_width, target_module, target_layer, sales_data
+        )
+        
+        if insert_result['success']:
+            return {
+                'pog_data': insert_result['new_pog_data'],
+                'status': 'success',
+                'error_msg': '',
+                'target_module': target_module,
+                'target_layer': target_layer
+            }
         else:
-            return self.shelf_layout
-    
-    def get_product_info(self, product_code):
-        """获取商品信息"""
-        if product_code in self.product_hierarchy:
-            sales_info = self.sales_data[
-                self.sales_data['item_code'] == product_code
-            ]
             return {
-                'hierarchy': self.product_hierarchy[product_code],
-                'sales': sales_info['sales'].values[0] if not sales_info.empty else 0,
-                'qty': sales_info['qty'].values[0] if not sales_info.empty else 0
+                'pog_data': pog_data,
+                'status': 'fail',
+                'error_msg': insert_result['error_msg']
             }
+            
+    except Exception as e:
+        return {
+            'pog_data': pog_data,
+            'status': 'fail',
+            'error_msg': f'函数执行出错: {str(e)}'
+        }
+
+def check_tray_item(item_code, tray_config):
+    """检查商品是否为托盘商品且不能在商品区域陈列"""
+    # 这里简化实现，实际应根据业务规则判断
+    # 假设托盘配置中有相关字段标识
+    return False  # 暂时返回False，实际需要根据业务逻辑实现
+
+def locate_item_position(item_code, pog_data, item_attributes, brand_hierarchy, sales_data):
+    """
+    定位商品应该放在哪个模块和层
+    按照品牌层级结构从细到粗查找
+    """
+    # 获取商品属性
+    item_info = get_item_info(item_code, item_attributes, brand_hierarchy)
+    if item_info is None:
+        return {
+            'success': False,
+            'error_msg': f'未找到商品 {item_code} 的属性信息'
+        }
+    
+    item_width = get_item_width(item_code, item_attributes)
+    if item_width is None:
+        return {
+            'success': False,
+            'error_msg': f'未找到商品 {item_code} 的宽度信息'
+        }
+    
+    # 获取商品的品牌层级信息
+    brand = item_info.get('brand')
+    series = item_info.get('series')
+    category = item_info.get('category')
+    brand_label = item_info.get('brand_label')
+    
+    # 按照层级从细到粗查找匹配位置
+    hierarchy_levels = [
+        {'brand': brand, 'series': series, 'category': category},  # 最细粒度
+        {'brand': brand, 'series': series},  # 品牌+系列
+        {'brand': brand},  # 仅品牌
+        {'brand_label': brand_label}  # 品牌集合
+    ]
+    
+    for level in hierarchy_levels:
+        position = find_matching_position(level, pog_data, item_attributes, brand_hierarchy)
+        if position is not None:
+            return {
+                'success': True,
+                'module': position['module'],
+                'layer': position['layer'],
+                'item_width': item_width
+            }
+    
+    # 如果所有层级都找不到匹配
+    return {
+        'success': False,
+        'error_msg': f'无法为商品 {item_code} 找到合适的摆放位置'
+    }
+
+def get_item_info(item_code, item_attributes, brand_hierarchy):
+    """获取商品的完整属性信息"""
+    # 从商品属性表获取基本信息
+    item_row = item_attributes[item_attributes['ITEM_NBR'] == int(item_code)]
+    if item_row.empty:
         return None
+    
+    item_info = {
+        'item_code': item_code,
+        'series': item_row.iloc[0]['SERIES'],
+        'item_name': item_row.iloc[0]['ITEM_NAME']
+    }
+    
+    # 从品牌层级表获取品牌信息（这里需要根据实际业务逻辑匹配）
+    # 简化实现：假设可以通过系列或其他方式匹配到品牌
+    brand_match = brand_hierarchy[brand_hierarchy['brand'].str.contains(item_info['series'], na=False)]
+    if not brand_match.empty:
+        item_info['brand'] = brand_match.iloc[0]['brand']
+        item_info['brand_label'] = brand_match.iloc[0]['brand_label']
+    
+    return item_info
+
+def get_item_width(item_code, item_attributes):
+    """获取商品宽度"""
+    # 这里需要根据实际情况获取商品宽度
+    # 简化实现：返回一个默认宽度
+    return 80  # 默认80mm
+
+def find_matching_position(level_criteria, pog_data, item_attributes, brand_hierarchy):
+    """根据层级条件查找匹配的位置"""
+    # 获取满足层级条件的所有商品
+    matching_items = get_items_by_hierarchy(level_criteria, pog_data, item_attributes, brand_hierarchy)
+    
+    if matching_items.empty:
+        return None
+    
+    # 计算每层的剩余空间
+    layer_space = calculate_layer_space(matching_items, pog_data)
+    if not layer_space:
+        return None
+    
+    # 返回剩余空间最大的层
+    max_space_layer = max(layer_space, key=lambda x: x['remaining_space'])
+    return {
+        'module': max_space_layer['module_id'],
+        'layer': max_space_layer['layer_id']
+    }
+
+def get_items_by_hierarchy(level_criteria, pog_data, item_attributes, brand_hierarchy):
+    """根据层级条件获取匹配的商品"""
+    # 这里需要实现根据品牌层级条件筛选商品的逻辑
+    # 简化实现：返回所有商品进行测试
+    return pog_data[pog_data['item_type'] == 'item']
+
+def calculate_layer_space(matching_items, pog_data):
+    """计算匹配商品所在各层的剩余空间"""
+    layer_space = []
+    
+    # 获取匹配商品所在的所有模块和层组合
+    layer_groups = matching_items.groupby(['module_id', 'layer_id'])
+    
+    for (module_id, layer_id), group in layer_groups:
+        # 获取该层的所有商品
+        layer_items = pog_data[
+            (pog_data['module_id'] == module_id) & 
+            (pog_data['layer_id'] == layer_id)
+        ]
+        
+        if layer_items.empty:
+            continue
+            
+        module_width = layer_items['module_width'].iloc[0]
+        used_space = layer_items['item_width'].sum()
+        remaining_space = module_width - used_space
+        
+        layer_space.append({
+            'module_id': module_id,
+            'layer_id': layer_id,
+            'remaining_space': remaining_space,
+            'item_count': len(layer_items)
+        })
+    
+    return layer_space
+
+def insert_item_to_target_layer(pog_data, item_code, item_width, target_module, target_layer, sales_data):
+    """在目标层插入商品"""
+    new_pog_data = pog_data.copy()
+    
+    # 获取目标层的所有商品
+    layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
+    layer_items = new_pog_data[layer_mask]
+    
+    if layer_items.empty:
+        # 如果该层没有商品，直接添加
+        result = add_item_to_empty_layer(new_pog_data, item_code, item_width, target_module, target_layer)
+        if result['success']:
+            return {'success': True, 'new_pog_data': result['new_pog_data']}
+        else:
+            return {'success': False, 'error_msg': result['error_msg']}
+    
+    # 计算当前剩余空间
+    module_width = layer_items['module_width'].iloc[0]
+    current_used_space = layer_items['item_width'].sum()
+    current_remaining_space = module_width - current_used_space
+    
+    if current_remaining_space >= item_width:
+        # 空间足够，直接插入并重排
+        result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer)
+        if result['success']:
+            return {'success': True, 'new_pog_data': result['new_pog_data']}
+        else:
+            return {'success': False, 'error_msg': result['error_msg']}
+    else:
+        # 空间不足，尝试调整策略
+        return adjust_space_for_insertion(new_pog_data, item_code, item_width, target_module, target_layer, sales_data)
+
+def add_item_to_empty_layer(pog_data, item_code, item_width, target_module, target_layer):
+    """向空层添加商品"""
+    new_pog_data = pog_data.copy()
+    
+    # 获取模块宽度
+    module_info = new_pog_data[new_pog_data['module_id'] == target_module].iloc[0]
+    module_width = module_info['module_width']
+    
+    # 创建新商品行
+    new_row = create_new_item_row(new_pog_data, item_code, item_width, target_module, target_layer, 0)
+    new_pog_data = pd.concat([new_pog_data, pd.DataFrame([new_row])], ignore_index=True)
+    
+    return {'success': True, 'new_pog_data': new_pog_data}
+
+def insert_and_rearrange(pog_data, item_code, item_width, target_module, target_layer):
+    """插入商品并重排位置"""
+    new_pog_data = pog_data.copy()
+    
+    # 在末尾添加商品
+    layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
+    layer_items = new_pog_data[layer_mask]
+    
+    if layer_items.empty:
+        return add_item_to_empty_layer(new_pog_data, item_code, item_width, target_module, target_layer)
+    
+    # 创建新商品行（临时位置）
+    new_row = create_new_item_row(new_pog_data, item_code, item_width, target_module, target_layer, 0)
+    new_pog_data = pd.concat([new_pog_data, pd.DataFrame([new_row])], ignore_index=True)
+    
+    # 重排该层所有商品
+    new_pog_data = rearrange_layer_items(new_pog_data, target_module, target_layer)
+    
+    return {'success': True, 'new_pog_data': new_pog_data}
+
+def create_new_item_row(pog_data, item_code, item_width, target_module, target_layer, position):
+    """创建新商品的数据行"""
+    # 获取参考行用于填充其他字段
+    ref_row = pog_data.iloc[0].copy()
+    
+    # 构建新行
+    new_row = {
+        'req_id': pog_data['req_id'].max() + 1,
+        'picture_id': ref_row['picture_id'],
+        'item_code': item_code,
+        'module_id': target_module,
+        'module': chr(64 + target_module),  # 1->A, 2->B, ...
+        'layer_id': target_layer,
+        'position': position,
+        'item_width': item_width,
+        'facing': 1,
+        'item_type': 'item',
+        'vert_facing': 1,
+        'module_width': ref_row['module_width']
+    }
+    
+    return new_row
+
+def rearrange_layer_items(pog_data, target_module, target_layer):
+    """重排指定层的商品位置，平均间隔"""
+    new_pog_data = pog_data.copy()
+    
+    layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
+    layer_indices = new_pog_data[layer_mask].index
+    
+    if len(layer_indices) == 0:
+        return new_pog_data
+    
+    module_width = new_pog_data.loc[layer_indices[0], 'module_width']
+    total_item_width = new_pog_data.loc[layer_indices, 'item_width'].sum()
+    
+    # 计算平均间隔
+    total_gap = module_width - total_item_width
+    gap_between_items = total_gap / (len(layer_indices) + 1) if len(layer_indices) > 0 else 0
+    
+    # 重新分配位置
+    current_position = gap_between_items
+    for idx in layer_indices:
+        new_pog_data.loc[idx, 'position'] = current_position
+        current_position += new_pog_data.loc[idx, 'item_width'] + gap_between_items
+    
+    return new_pog_data
+
+def adjust_space_for_insertion(pog_data, item_code, item_width, target_module, target_layer, sales_data):
+    """调整空间策略：减少facing或删除商品"""
+    new_pog_data = pog_data.copy()
+    layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
+    
+    # 策略1: 尝试减少double facing商品的facing
+    double_facing_items = new_pog_data[layer_mask & (new_pog_data['facing'] > 1)]
+    
+    if not double_facing_items.empty:
+        # 获取销售数据并排序（从低到高）
+        sorted_items = get_sorted_items_by_sales(double_facing_items, sales_data, ascending=True)
+        
+        for idx in sorted_items.index:
+            # 减少一个facing
+            original_facing = new_pog_data.loc[idx, 'facing']
+            new_pog_data.loc[idx, 'facing'] = original_facing - 1
+            
+            # 检查空间是否足够
+            layer_items_after_adjust = new_pog_data[layer_mask]
+            module_width = layer_items_after_adjust['module_width'].iloc[0]
+            used_space_after = layer_items_after_adjust['item_width'].sum()
+            remaining_space_after = module_width - used_space_after
+            
+            if remaining_space_after >= item_width:
+                # 空间足够，插入商品
+                result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer)
+                if result['success']:
+                    return {'success': True, 'new_pog_data': result['new_pog_data']}
+            
+            # 如果还是不够，恢复原状继续尝试下一个
+            new_pog_data.loc[idx, 'facing'] = original_facing
+    
+    # 策略2: 删除销售最低的商品
+    layer_items = new_pog_data[layer_mask]
+    if len(layer_items) > 1:
+        # 获取销售数据并排序（从低到高）
+        sorted_items = get_sorted_items_by_sales(layer_items, sales_data, ascending=True)
+        
+        for idx in sorted_items.index:
+            # 删除一个商品
+            temp_pog_data = new_pog_data.drop(index=idx)
+            
+            # 检查空间是否足够
+            temp_layer_items = temp_pog_data[
+                (temp_pog_data['module_id'] == target_module) & 
+                (temp_pog_data['layer_id'] == target_layer)
+            ]
+            module_width = temp_layer_items['module_width'].iloc[0]
+            used_space_after = temp_layer_items['item_width'].sum()
+            remaining_space_after = module_width - used_space_after
+            
+            if remaining_space_after >= item_width:
+                # 空间足够，插入商品
+                result = insert_and_rearrange(temp_pog_data, item_code, item_width, target_module, target_layer)
+                if result['success']:
+                    return {'success': True, 'new_pog_data': result['new_pog_data']}
+    
+    # 所有策略都失败
+    return {
+        'success': False, 
+        'error_msg': f'空间不足，无法添加商品 {item_code}，即使调整facing和删除商品后仍然无法容纳'
+    }
+
+def get_sorted_items_by_sales(items_df, sales_data, ascending=True):
+    """根据销售数据对商品进行排序"""
+    # 合并销售数据
+    merged_df = items_df.merge(
+        sales_data, 
+        left_on='item_code', 
+        right_on='item_code', 
+        how='left'
+    )
+    
+    # 填充缺失的销售数据
+    merged_df['sales'] = merged_df['sales'].fillna(0)
+    
+    # 按销售排序
+    return merged_df.sort_values('sales', ascending=ascending)
 
 # 使用示例
-def main():
-    # 初始化优化器
-    optimizer = ItemDataCreator('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv','pog_result.csv','sales_item_sum.csv')
-    
-    # 示例1：添加新商品
-    new_product = '101450423'  # 从数据中选择一个商品作为示例
-    result = optimizer.add_new_product(new_product, new_product_size=35)
-    print(f"结果: {result}")
-    
-    # 示例2：查看货架状态
-    # shelf_status = optimizer.get_shelf_status('shelf_1')
-    # print(f"货架1状态: {shelf_status}")
-    
-    # 示例3：获取商品信息
-    product_info = optimizer.get_product_info(new_product)
-    print(f"商品信息: {product_info}")
-
 if __name__ == "__main__":
-    main()
+    # 数据加载
+    pog_data = pd.read_csv('pog_result.csv')
+    tray_item = pd.read_csv('pog_test_haircare_tray.csv')
+    item_attributes = pd.read_csv('pog_test_haircare_test.csv')
+    brand_hierarchy = pd.read_csv('brand_2_brand_label.csv')
+    sales_data = pd.read_csv('sales_item_sum.csv')
+    
+    # 构建var_dict
+    var_dict = {
+        'bases_data': {
+            'pog_data': pog_data,
+            'tray_item': tray_item,
+            'item_attributes': item_attributes,
+            'brand_hierarchy': brand_hierarchy,
+            'sales_data': sales_data
+        },
+        'add_item': 101437322  # 示例商品编码，位于pog_test_haircare_test.csv的首行
+    }
+    
+    # 执行函数
+    result = add_item_func(var_dict)
+    
+    print(f"执行状态: {result['status']}")
+    if result['status'] == 'success':
+        print("商品添加成功！")
+        print(f"新pog_data形状: {result['pog_data'].shape}")
+    else:
+        print(f"错误信息: {result['error_msg']}")
