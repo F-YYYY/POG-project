@@ -1,0 +1,952 @@
+# -*- coding: utf-8 -*-
+"""
+SKU互换处理器 - 函数式版本（支持托盘固定位置）
+支持现有商品互换的完整校验流程
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+import itertools
+import math
+import ast
+from typing import Tuple, Dict, List, Optional, Any
+
+def safe_int_conversion(value, default=0):
+    """
+    安全地将值转换为整数
+    
+    Args:
+        value: 要转换的值
+        default: 转换失败时的默认值
+        
+    Returns:
+        int: 转换后的整数值
+    """
+    if pd.isna(value) or value is None:
+        return default
+    
+    if isinstance(value, (int, float, np.integer)):
+        return int(value)
+    
+    if isinstance(value, str):
+        # 移除可能的示例文本和中文
+        cleaned_value = value.strip()
+        # 移除"例:"等前缀
+        if ':' in cleaned_value:
+            cleaned_value = cleaned_value.split(':', 1)[1].strip()
+        # 只保留数字
+        cleaned_value = ''.join(filter(str.isdigit, cleaned_value))
+        
+        if cleaned_value:
+            try:
+                return int(cleaned_value)
+            except (ValueError, TypeError):
+                return default
+    
+    return default
+
+def initialize_var_dict(base_path=None):
+    """
+    初始化var_dict，加载所有基础数据
+    
+    Args:
+        base_path: 数据文件所在目录路径
+        
+    Returns:
+        var_dict: 包含所有基础数据的字典
+    """
+    var_dict = {
+        'bases_data': {},
+        'func': {
+            'switch_item_func': {
+                'description': '互换两个现有商品的位置',
+                'required_params': ['item1', 'item2']
+            }
+        }
+    }
+    
+    if base_path is None:
+        base_path = os.getcwd()
+    
+    try:
+        print("开始加载数据文件...")
+        
+        # 加载配置
+        config_path = os.path.join(base_path, 'config.txt')
+        print(f"配置文件路径: {config_path}")
+        
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            if '=' in content:
+                dict_str = content.split('=', 1)[1].strip()
+            else:
+                dict_str = content
+            config = ast.literal_eval(dict_str)
+            var_dict['bases_data']['config'] = config
+            print("✓ 配置文件加载完成")
+        else:
+            print("⚠ 配置文件不存在，使用空配置")
+            var_dict['bases_data']['config'] = {}
+        
+        # 加载商品主数据
+        item_master_path = os.path.join(base_path, 'ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
+        print(f"商品主数据路径: {item_master_path}")
+        if os.path.exists(item_master_path):
+            item_master = pd.read_csv(item_master_path)
+            # 安全转换item_idnt列
+            if 'item_idnt' in item_master.columns:
+                item_master['item_idnt'] = item_master['item_idnt'].apply(safe_int_conversion)
+            var_dict['bases_data']['item_master'] = item_master
+            print("✓ 商品主数据加载完成")
+        else:
+            print("⚠ 商品主数据文件不存在，创建空数据框")
+            var_dict['bases_data']['item_master'] = pd.DataFrame()
+        
+        # 加载销售数据
+        sales_path = os.path.join(base_path, 'sales_item_sum.csv')
+        print(f"销售数据路径: {sales_path}")
+        if os.path.exists(sales_path):
+            sales_data = pd.read_csv(sales_path)
+            # 安全转换item_code列
+            if 'item_code' in sales_data.columns:
+                sales_data['item_code'] = sales_data['item_code'].apply(safe_int_conversion)
+            var_dict['bases_data']['sales_data'] = sales_data
+            print("✓ 销售数据加载完成")
+        else:
+            print("⚠ 销售数据文件不存在，创建空数据框")
+            var_dict['bases_data']['sales_data'] = pd.DataFrame()
+        
+        # 加载当前POG结果
+        pog_path = os.path.join(base_path, 'pog_result.csv')
+        print(f"POG数据路径: {pog_path}")
+        if os.path.exists(pog_path):
+            pog_data = pd.read_csv(pog_path)
+            # 安全转换item_code列
+            if 'item_code' in pog_data.columns:
+                pog_data['item_code'] = pog_data['item_code'].apply(safe_int_conversion)
+            var_dict['bases_data']['pog_data'] = pog_data
+            print("✓ POG结果数据加载完成")
+        else:
+            print("⚠ POG数据文件不存在，创建空数据框")
+            var_dict['bases_data']['pog_data'] = pd.DataFrame()
+        
+        # 加载tray数据
+        tray_path = os.path.join(base_path, 'pog_test_haircare_tray.csv')
+        tray_item_path = os.path.join(base_path, 'pog_test_haircare_tray_item.csv')
+        print(f"Tray数据路径: {tray_path}")
+        print(f"Tray商品数据路径: {tray_item_path}")
+        
+        if os.path.exists(tray_path):
+            tray_data = pd.read_csv(tray_path)
+            var_dict['bases_data']['tray_data'] = tray_data
+            print("✓ Tray数据加载完成")
+        else:
+            print("⚠ Tray数据文件不存在，创建空数据框")
+            var_dict['bases_data']['tray_data'] = pd.DataFrame()
+            
+        if os.path.exists(tray_item_path):
+            tray_item_data = pd.read_csv(tray_item_path)
+            # 安全转换item_code列
+            if 'item_code' in tray_item_data.columns:
+                tray_item_data['item_code'] = tray_item_data['item_code'].apply(safe_int_conversion)
+            var_dict['bases_data']['tray_item_data'] = tray_item_data
+            print("✓ Tray商品数据加载完成")
+        else:
+            print("⚠ Tray商品数据文件不存在，创建空数据框")
+            var_dict['bases_data']['tray_item_data'] = pd.DataFrame()
+        
+        # 准备SKU数据
+        sku_data = _prepare_sku_data(var_dict)
+        var_dict['bases_data']['sku_data'] = sku_data
+        print("✓ SKU数据准备完成")
+        
+        # 识别固定位置托盘
+        fixed_trays = _identify_fixed_position_trays(var_dict)
+        var_dict['bases_data']['fixed_trays'] = fixed_trays
+        print(f"✓ 识别固定位置托盘: {len(fixed_trays)}个")
+        
+        print("所有数据加载完成!")
+        return var_dict
+        
+    except FileNotFoundError as e:
+        print(f"文件未找到: {e}")
+        files_to_check = [
+            'config.txt', 'ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv',
+            'sales_item_sum.csv', 'pog_result.csv',
+            'pog_test_haircare_tray.csv', 'pog_test_haircare_tray_item.csv'
+        ]
+        for file in files_to_check:
+            file_path = os.path.join(base_path, file)
+            exists = os.path.exists(file_path)
+            print(f"  {file}: {'✓ 存在' if exists else '✗ 不存在'}")
+        raise
+    except Exception as e:
+        print(f"数据加载失败: {e}")
+        raise
+
+def _identify_fixed_position_trays(var_dict):
+    """识别固定位置的托盘"""
+    config = var_dict['bases_data']['config']
+    tray_config = config.get('tray', {})
+    fixed_trays = {}
+    
+    for tray_id, tray_info in tray_config.items():
+        # 如果layer_type为'module'，则是固定位置托盘
+        if tray_info.get('layer_type') == 'module':
+            fixed_trays[int(tray_id)] = tray_info
+            print(f"  - 托盘 {tray_id}: 固定位置")
+        else:
+            print(f"  - 托盘 {tray_id}: 可移动位置")
+    
+    return fixed_trays
+
+def _prepare_sku_data(var_dict):
+    """准备SKU数据"""
+    pog_data = var_dict['bases_data']['pog_data']
+    item_master = var_dict['bases_data']['item_master']
+    sales_data = var_dict['bases_data']['sales_data']
+    tray_item_data = var_dict['bases_data']['tray_item_data']
+    
+    # 检查数据是否为空
+    if pog_data.empty:
+        print("⚠ POG数据为空，创建空的SKU数据")
+        return pd.DataFrame()
+    
+    # 统一数据类型：将item_code转换为整数
+    if 'item_code' in pog_data.columns:
+        pog_data['item_code'] = pog_data['item_code'].apply(safe_int_conversion)
+    
+    if not item_master.empty and 'item_idnt' in item_master.columns:
+        item_master['item_idnt'] = item_master['item_idnt'].apply(safe_int_conversion)
+    
+    if not sales_data.empty and 'item_code' in sales_data.columns:
+        sales_data['item_code'] = sales_data['item_code'].apply(safe_int_conversion)
+    
+    if not tray_item_data.empty and 'item_code' in tray_item_data.columns:
+        tray_item_data['item_code'] = tray_item_data['item_code'].apply(safe_int_conversion)
+    
+    # 合并POG结果和商品主数据
+    if not item_master.empty and 'item_idnt' in item_master.columns:
+        sku_merged = pd.merge(
+            pog_data, 
+            item_master, 
+            left_on='item_code', 
+            right_on='item_idnt', 
+            how='left'
+        )
+    else:
+        sku_merged = pog_data.copy()
+        print("⚠ 商品主数据为空或缺少item_idnt列，跳过合并")
+    
+    # 合并销售数据
+    if not sales_data.empty and 'item_code' in sales_data.columns:
+        sku_merged = pd.merge(
+            sku_merged,
+            sales_data,
+            on='item_code',
+            how='left'
+        )
+    else:
+        print("⚠ 销售数据为空或缺少item_code列，跳过合并")
+    
+    # 添加固定位置标识（从tray数据中获取）
+    if not tray_item_data.empty and 'is_place_item' in tray_item_data.columns:
+        fixed_position_items = tray_item_data[
+            tray_item_data['is_place_item'] == 1
+        ]['item_code'].unique()
+        
+        sku_merged['is_fixed_position'] = sku_merged['item_code'].isin(fixed_position_items)
+        print(f"✓ 识别固定位置商品: {len(fixed_position_items)}个")
+    else:
+        sku_merged['is_fixed_position'] = False
+        print("⚠ Tray商品数据为空或缺少必要列，所有商品标记为非固定位置")
+    
+    return sku_merged
+
+def _get_sku_info(var_dict, item_code):
+    """获取SKU的完整信息"""
+    sku_data = var_dict['bases_data']['sku_data']
+    
+    if sku_data.empty:
+        raise ValueError(f"SKU数据为空，无法获取商品 {item_code} 的信息")
+    
+    sku_info = sku_data[sku_data['item_code'] == item_code]
+    
+    if sku_info.empty:
+        raise ValueError(f"未找到商品 {item_code}")
+    
+    info = {
+        'item_code': item_code,
+        'module_id': sku_info['module_id'].iloc[0] if 'module_id' in sku_info.columns else 0,
+        'layer_id': sku_info['layer_id'].iloc[0] if 'layer_id' in sku_info.columns else 0,
+        'position': sku_info['position'].iloc[0] if 'position' in sku_info.columns else 0,
+        'item_width': sku_info['item_width'].iloc[0] if 'item_width' in sku_info.columns else 0,
+        'facing': sku_info['facing'].iloc[0] if 'facing' in sku_info.columns else 1,
+        'height': sku_info['item_height'].iloc[0] if 'item_height' in sku_info.columns else 0,
+        'is_fixed_position': sku_info['is_fixed_position'].iloc[0] if 'is_fixed_position' in sku_info.columns else False,
+        'module': sku_info['module'].iloc[0] if 'module' in sku_info.columns else '',
+        'item_type': sku_info['item_type'].iloc[0] if 'item_type' in sku_info.columns else '',
+        'vert_facing': sku_info['vert_facing'].iloc[0] if 'vert_facing' in sku_info.columns else 1,
+        'module_width': sku_info['module_width'].iloc[0] if 'module_width' in sku_info.columns else 1000
+    }
+    
+    return info
+
+def _get_specified_position_items(var_dict):
+    """获取指定位置商品列表"""
+    config = var_dict['bases_data']['config']
+    specified_items = config.get('item_position', {}).get('item_list', [])
+    # 安全转换指定位置商品
+    specified_items = [safe_int_conversion(item) for item in specified_items]
+    print(f"✓ 识别指定位置商品: {len(specified_items)}个")
+    return specified_items
+
+def _get_specified_series_items(var_dict):
+    """获取指定连带商品列表"""
+    config = var_dict['bases_data']['config']
+    series_items = []
+    tray_config = config.get('tray', {})
+    
+    for tray_id, tray_info in tray_config.items():
+        series_item_config = tray_info.get('series_item', {})
+        tray_series_items = list(series_item_config.keys())
+        if tray_series_items:
+            tray_series_items = [safe_int_conversion(item) for item in tray_series_items]
+            series_items.extend(tray_series_items)
+    
+    # 去重
+    series_items = list(set(series_items))
+    print(f"✓ 识别指定连带商品: {len(series_items)}个")
+    return series_items
+
+def _validate_special_rules(var_dict, sku1, sku2):
+    """校验特殊规则"""
+    print(f"\n步骤1: 检查特殊规则")
+    
+    # 1.1 检查指定位置商品
+    specified_position_items = _get_specified_position_items(var_dict)
+    if sku1 in specified_position_items:
+        return False, f'商品 {sku1} 为指定位置商品，不能移动'
+    if sku2 in specified_position_items:
+        return False, f'商品 {sku2} 为指定位置商品，不能移动'
+    print("✓ 指定位置检查通过")
+    
+    # 1.2 检查指定连带商品
+    specified_series_items = _get_specified_series_items(var_dict)
+    if sku1 in specified_series_items:
+        return False, f'商品 {sku1} 为指定连带商品，不能单独移动'
+    if sku2 in specified_series_items:
+        return False, f'商品 {sku2} 为指定连带商品，不能单独移动'
+    print("✓ 指定连带检查通过")
+    
+    # 1.3 检查固定位置商品
+    sku1_info = _get_sku_info(var_dict, sku1)
+    sku2_info = _get_sku_info(var_dict, sku2)
+    
+    if sku1_info['is_fixed_position']:
+        return False, f'商品 {sku1} 为固定位置商品，不能移动'
+    if sku2_info['is_fixed_position']:
+        return False, f'商品 {sku2} 为固定位置商品，不能移动'
+    print("✓ 固定位置检查通过")
+    
+    return True, "所有特殊规则检查通过"
+
+def _get_layer_height(var_dict):
+    """获取货架高度"""
+    config = var_dict['bases_data']['config']
+    try:
+        layer_height = config['global']['layer_height']
+        print(f"✓ 货架高度: {layer_height}mm")
+        return layer_height
+    except KeyError:
+        print("⚠ 警告: 配置文件中未找到货架高度(layer_height)配置，使用默认值1500mm")
+        return 1500
+
+def _validate_height_feasibility(var_dict, sku1, sku2, sku1_info, sku2_info):
+    """高度可行性校验"""
+    print(f"\n步骤2: 高度可行性校验")
+    
+    # 获取货架高度
+    layer_height = _get_layer_height(var_dict)
+    
+    # 检查SKU1在目标层的高度可行性
+    sku1_height = sku1_info['height']
+    target_layer1 = sku2_info['layer_id']
+    if sku1_height > layer_height:
+        return False, f'商品 {sku1} 高度 {sku1_height}mm > 目标层高 {layer_height}mm，无法放入模块{sku2_info["module_id"]}层{target_layer1}'
+    print(f"✓ SKU {sku1} 高度 {sku1_height}mm <= 目标层高 {layer_height}mm")
+    
+    # 检查SKU2在目标层的高度可行性
+    sku2_height = sku2_info['height']
+    target_layer2 = sku1_info['layer_id']
+    if sku2_height > layer_height:
+        return False, f'商品 {sku2} 高度 {sku2_height}mm > 目标层高 {layer_height}mm，无法放入模块{sku1_info["module_id"]}层{target_layer2}'
+    print(f"✓ SKU {sku2} 高度 {sku2_height}mm <= 目标层高 {layer_height}mm")
+    
+    print("✓ 高度可行性校验通过")
+    return True, "高度可行性校验通过"
+
+def _calculate_layer_remaining_space(var_dict, module_id, layer_id, exclude_sku=None):
+    """计算指定层的剩余空间"""
+    sku_data = var_dict['bases_data']['sku_data']
+    
+    if sku_data.empty:
+        return {'total_space': 1000, 'item_count': 0}
+    
+    # 获取该层的所有商品
+    layer_items = sku_data[
+        (sku_data['module_id'] == module_id) & 
+        (sku_data['layer_id'] == layer_id)
+    ]
+    
+    # 如果指定了排除的SKU，则排除
+    if exclude_sku:
+        layer_items = layer_items[layer_items['item_code'] != exclude_sku]
+    
+    layer_items = layer_items.sort_values('position')
+    
+    if layer_items.empty:
+        return {'total_space': 1000, 'item_count': 0}
+    
+    module_width = 1000  # 每个模块1000mm
+    total_gaps = 0
+    
+    # 开头间隙
+    if layer_items.iloc[0]['position'] > 0:
+        total_gaps += layer_items.iloc[0]['position']
+    
+    # 商品间间隙
+    for i in range(len(layer_items) - 1):
+        current_end = layer_items.iloc[i]['position'] + layer_items.iloc[i]['item_width']
+        next_start = layer_items.iloc[i + 1]['position']
+        gap = next_start - current_end
+        if gap > 0:
+            total_gaps += gap
+    
+    # 结尾间隙
+    last_item_end = layer_items.iloc[-1]['position'] + layer_items.iloc[-1]['item_width']
+    if last_item_end < module_width:
+        total_gaps += module_width - last_item_end
+    
+    return {
+        'total_space': total_gaps,
+        'item_count': len(layer_items),
+        'module_width': module_width
+    }
+
+def _identify_fixed_position_items_in_layer(var_dict, module_id, layer_id):
+    """识别指定层中的固定位置商品（托盘及其前方商品）"""
+    sku_data = var_dict['bases_data']['sku_data']
+    fixed_trays = var_dict['bases_data']['fixed_trays']
+    
+    if sku_data.empty:
+        return []
+    
+    # 获取该层的所有商品
+    layer_items = sku_data[
+        (sku_data['module_id'] == module_id) & 
+        (sku_data['layer_id'] == layer_id)
+    ].sort_values('position')
+    
+    # 确保item_code为整数类型
+    if 'item_code' in layer_items.columns:
+        layer_items['item_code'] = layer_items['item_code'].apply(safe_int_conversion)
+    
+    fixed_items = set()
+    
+    # 识别托盘商品（固定位置）
+    for tray_id, tray_info in fixed_trays.items():
+        # 检查托盘是否在该层
+        tray_layer = tray_info.get('layer')
+        if tray_layer == layer_id:
+            # 获取该托盘的所有商品
+            tray_items = var_dict['bases_data']['tray_item_data']
+            if not tray_items.empty and 'item_code' in tray_items.columns:
+                tray_item_codes = tray_items[tray_items['tray_id'] == tray_id]['item_code'].apply(safe_int_conversion).values
+                
+                for item_code in tray_item_codes:
+                    if item_code in layer_items['item_code'].values:
+                        fixed_items.add(item_code)
+                        
+                        # 找到托盘商品的位置
+                        tray_item_info = layer_items[layer_items['item_code'] == item_code].iloc[0]
+                        tray_position = tray_item_info['position']
+                        tray_width = tray_item_info['item_width']
+                        
+                        # 识别托盘前方的商品（位置小于托盘位置的）
+                        front_items = layer_items[layer_items['position'] < tray_position]
+                        for _, front_item in front_items.iterrows():
+                            fixed_items.add(front_item['item_code'])
+    
+    # 添加其他固定位置商品
+    if 'is_fixed_position' in layer_items.columns:
+        fixed_position_items = layer_items[layer_items['is_fixed_position']]['item_code'].values
+        for item_code in fixed_position_items:
+            fixed_items.add(item_code)
+    
+    return list(fixed_items)
+
+def _gap_expand_adjusted_with_fixed_positions(var_dict, sku_df, max_interval=5):
+    """调整商品间隔（考虑固定位置商品）"""
+    if sku_df.empty:
+        return sku_df
+        
+    sku_df_cp = sku_df.copy()
+    
+    for (module_id, layer_id), group in sku_df_cp.groupby(['module_id', 'layer_id']):
+        # 识别该层的固定位置商品
+        fixed_items = _identify_fixed_position_items_in_layer(var_dict, module_id, layer_id)
+        
+        if not fixed_items:
+            # 如果没有固定位置商品，正常调整
+            sorted_group = group.sort_values('position')
+            
+            current_pos = 0
+            new_positions = []
+            
+            for ind, row in sorted_group.iterrows():
+                new_positions.append(current_pos)
+                current_pos += row['item_width'] + max_interval
+            
+            sku_df_cp.loc[sorted_group.index, 'position'] = new_positions
+        else:
+            # 有固定位置商品，分段处理
+            sorted_group = group.sort_values('position')
+            fixed_items_positions = []
+            
+            # 获取固定位置商品的位置信息
+            for item_code in fixed_items:
+                item_info = sorted_group[sorted_group['item_code'] == item_code]
+                if not item_info.empty:
+                    fixed_items_positions.append({
+                        'item_code': item_code,
+                        'position': item_info['position'].iloc[0],
+                        'width': item_info['item_width'].iloc[0],
+                        'index': item_info.index[0]
+                    })
+            
+            # 按位置排序固定商品
+            fixed_items_positions.sort(key=lambda x: x['position'])
+            
+            # 分段处理非固定位置商品
+            current_pos = 0
+            
+            for i, fixed_item in enumerate(fixed_items_positions):
+                # 处理固定商品之前的非固定商品
+                items_before = sorted_group[
+                    (sorted_group['position'] < fixed_item['position']) & 
+                    (~sorted_group['item_code'].isin(fixed_items))
+                ]
+                
+                for _, row in items_before.iterrows():
+                    if row['position'] >= current_pos:  # 避免重复处理
+                        sku_df_cp.loc[row.name, 'position'] = current_pos
+                        current_pos += row['item_width'] + max_interval
+                
+                # 设置固定商品位置（保持不变）
+                sku_df_cp.loc[fixed_item['index'], 'position'] = fixed_item['position']
+                current_pos = fixed_item['position'] + fixed_item['width'] + max_interval
+            
+            # 处理最后一个固定商品之后的非固定商品
+            last_fixed_pos = fixed_items_positions[-1]['position'] if fixed_items_positions else 0
+            last_fixed_width = fixed_items_positions[-1]['width'] if fixed_items_positions else 0
+            current_pos = last_fixed_pos + last_fixed_width + max_interval
+            
+            items_after = sorted_group[
+                (sorted_group['position'] > last_fixed_pos) & 
+                (~sorted_group['item_code'].isin(fixed_items))
+            ]
+            
+            for _, row in items_after.iterrows():
+                sku_df_cp.loc[row.name, 'position'] = current_pos
+                current_pos += row['item_width'] + max_interval
+    
+    return sku_df_cp
+
+def _reduce_intervals(var_dict, module_id, layer_id, exclude_sku=None):
+    """缩减商品间隔（考虑固定位置）"""
+    try:
+        sku_data = var_dict['bases_data']['sku_data']
+        if sku_data.empty:
+            return False
+            
+        layer_items = sku_data[
+            (sku_data['module_id'] == module_id) & 
+            (sku_data['layer_id'] == layer_id) &
+            (~sku_data['is_fixed_position'])  # 排除固定位置商品
+        ]
+        
+        if exclude_sku:
+            layer_items = layer_items[layer_items['item_code'] != exclude_sku]
+        
+        if layer_items.empty:
+            return False
+        
+        # 重新排列商品，最小化间隔（考虑固定位置）
+        adjusted_items = _gap_expand_adjusted_with_fixed_positions(var_dict, layer_items, max_interval=1)
+        sku_data.loc[adjusted_items.index] = adjusted_items
+        
+        print("  - 已缩减商品间隔（考虑固定位置）")
+        return True
+        
+    except Exception as e:
+        print(f"缩减间隔异常: {e}")
+        return False
+
+def _remove_double_facing_by_sales(var_dict, module_id, layer_id, required_width, exclude_sku=None):
+    """移除double facing（按销售从低到高排序，考虑固定位置）"""
+    try:
+        sku_data = var_dict['bases_data']['sku_data']
+        if sku_data.empty:
+            return False
+            
+        layer_items = sku_data[
+            (sku_data['module_id'] == module_id) & 
+            (sku_data['layer_id'] == layer_id) &
+            (~sku_data['is_fixed_position'])  # 排除固定位置商品
+        ]
+        
+        if exclude_sku:
+            layer_items = layer_items[layer_items['item_code'] != exclude_sku]
+        
+        double_facing_items = layer_items[layer_items['facing'] > 1]
+        
+        if double_facing_items.empty:
+            print("  - 该层没有double facing商品")
+            return False
+        
+        # 按销售从低到高排序
+        double_facing_sorted = double_facing_items.sort_values('sales', ascending=True)
+        
+        for _, worst_selling in double_facing_sorted.iterrows():
+            # 缩减面位
+            sku_data.loc[worst_selling.name, 'facing'] = 1
+            original_single_width = worst_selling['item_width'] / worst_selling['facing']
+            sku_data.loc[worst_selling.name, 'item_width'] = original_single_width
+            
+            print(f"  - 已缩减商品 {worst_selling['item_code']} 的面位（销售: {worst_selling['sales']:.2f}）")
+            
+            # 检查当前空间是否足够
+            current_space = _calculate_layer_remaining_space(var_dict, module_id, layer_id, exclude_sku)['total_space']
+            if current_space >= required_width:
+                return True
+        
+        return False
+        
+    except Exception as e:
+        print(f"移除double facing异常: {e}")
+        return False
+
+def _adjust_space_for_sku(var_dict, target_module, target_layer, required_width, exclude_sku=None):
+    """为目标位置调整空间"""
+    print(f"为模块{target_module}层{target_layer}调整空间，需要{required_width}mm")
+    
+    # 获取当前空间
+    current_space = _calculate_layer_remaining_space(var_dict, target_module, target_layer, exclude_sku)['total_space']
+    
+    if current_space >= required_width:
+        print("✓ 当前空间充足")
+        return True
+    
+    print(f"当前空间不足 ({current_space}mm < {required_width}mm)，尝试调整...")
+    
+    # 调整策略1: 缩减商品间隔（考虑固定位置）
+    print("调整策略1: 缩减商品间隔")
+    if _reduce_intervals(var_dict, target_module, target_layer, exclude_sku):
+        current_space = _calculate_layer_remaining_space(var_dict, target_module, target_layer, exclude_sku)['total_space']
+        if current_space >= required_width:
+            print("✓ 缩减间隔后空间充足")
+            return True
+    
+    # 调整策略2: 移除double facing（按销售从低到高）
+    print("调整策略2: 移除double facing商品（按销售从低到高）")
+    if _remove_double_facing_by_sales(var_dict, target_module, target_layer, required_width, exclude_sku):
+        current_space = _calculate_layer_remaining_space(var_dict, target_module, target_layer, exclude_sku)['total_space']
+        if current_space >= required_width:
+            print("✓ 移除double facing后空间充足")
+            return True
+    
+    print("✗ 空间调整失败")
+    return False
+
+def _validate_space_sufficiency(var_dict, sku1_info, sku2_info):
+    """空间充足性校验"""
+    print(f"\n步骤3: 空间充足性校验")
+    
+    # 3.1 检查SKU1是否能放入SKU2的位置
+    print(f"检查 SKU {sku1_info['item_code']} 是否能放入模块{sku2_info['module_id']}层{sku2_info['layer_id']}")
+    space_info1 = _calculate_layer_remaining_space(
+        var_dict, sku2_info['module_id'], sku2_info['layer_id'], sku2_info['item_code']
+    )
+    
+    if space_info1['total_space'] < sku1_info['item_width']:
+        print(f"空间不足 ({space_info1['total_space']}mm < {sku1_info['item_width']}mm)，尝试调整...")
+        if not _adjust_space_for_sku(
+            var_dict, sku2_info['module_id'], sku2_info['layer_id'], 
+            sku1_info['item_width'], sku2_info['item_code']
+        ):
+            return False, f'无法为商品 {sku1_info["item_code"]} 在目标位置创造足够空间'
+    
+    # 3.2 检查SKU2是否能放入SKU1的位置
+    print(f"检查 SKU {sku2_info['item_code']} 是否能放入模块{sku1_info['module_id']}层{sku1_info['layer_id']}")
+    space_info2 = _calculate_layer_remaining_space(
+        var_dict, sku1_info['module_id'], sku1_info['layer_id'], sku1_info['item_code']
+    )
+    
+    if space_info2['total_space'] < sku2_info['item_width']:
+        print(f"空间不足 ({space_info2['total_space']}mm < {sku2_info['item_width']}mm)，尝试调整...")
+        if not _adjust_space_for_sku(
+            var_dict, sku1_info['module_id'], sku1_info['layer_id'], 
+            sku2_info['item_width'], sku1_info['item_code']
+        ):
+            return False, f'无法为商品 {sku2_info["item_code"]} 在目标位置创造足够空间'
+    
+    print("✓ 空间充足性校验通过")
+    return True, "空间充足性校验通过"
+
+def _perform_swap(var_dict, sku1, sku2, sku1_info, sku2_info):
+    """执行商品互换"""
+    print(f"\n步骤4: 执行商品互换")
+    print(f"  SKU {sku1} (模块{sku1_info['module_id']}层{sku1_info['layer_id']})")
+    print(f"  ↔")
+    print(f"  SKU {sku2} (模块{sku2_info['module_id']}层{sku2_info['layer_id']})")
+    
+    sku_data = var_dict['bases_data']['sku_data']
+    
+    # 临时保存原始位置
+    sku1_original_pos = sku1_info['position']
+    sku2_original_pos = sku2_info['position']
+    
+    # 互换位置
+    sku1_mask = sku_data['item_code'] == sku1
+    sku2_mask = sku_data['item_code'] == sku2
+    
+    sku_data.loc[sku1_mask, 'module_id'] = sku2_info['module_id']
+    sku_data.loc[sku1_mask, 'layer_id'] = sku2_info['layer_id']
+    sku_data.loc[sku1_mask, 'position'] = sku2_original_pos
+    sku_data.loc[sku1_mask, 'module'] = sku2_info['module']
+    
+    sku_data.loc[sku2_mask, 'module_id'] = sku1_info['module_id']
+    sku_data.loc[sku2_mask, 'layer_id'] = sku1_info['layer_id']
+    sku_data.loc[sku2_mask, 'position'] = sku1_original_pos
+    sku_data.loc[sku2_mask, 'module'] = sku1_info['module']
+    
+    print("✓ 商品位置互换完成")
+
+def _readjust_all_positions(var_dict):
+    """重新调整所有商品位置（考虑固定位置）"""
+    try:
+        sku_data = var_dict['bases_data']['sku_data']
+        if not sku_data.empty:
+            adjusted_data = _gap_expand_adjusted_with_fixed_positions(var_dict, sku_data, max_interval=5)
+            var_dict['bases_data']['sku_data'] = adjusted_data
+            print("✓ 所有商品位置重新调整完成（考虑固定位置）")
+    except Exception as e:
+        print(f"位置调整异常: {e}")
+
+def _get_output_data(var_dict):
+    """生成输出数据"""
+    try:
+        sku_data = var_dict['bases_data']['sku_data']
+        config = var_dict['bases_data']['config']
+        original_pog = var_dict['bases_data']['pog_data']
+        
+        if sku_data.empty:
+            print("⚠ SKU数据为空，返回原始POG数据")
+            return original_pog
+        
+        output_columns = [
+            'req_id', 'picture_id', 'item_code', 'module_id', 'module', 
+            'layer_id', 'position', 'item_width', 'facing', 'item_type', 
+            'vert_facing', 'module_width'
+        ]
+        
+        output_df = pd.DataFrame()
+        
+        for col in output_columns:
+            if col in sku_data.columns:
+                output_df[col] = sku_data[col]
+            elif col in original_pog.columns:
+                output_df[col] = original_pog[col]
+            else:
+                if col == 'req_id':
+                    output_df[col] = config.get('global', {}).get('req_id', 'default_req_id')
+                elif col == 'picture_id':
+                    output_df[col] = config.get('global', {}).get('picture_id', 'default_picture_id')
+                elif col == 'module_width':
+                    output_df[col] = 1000
+                else:
+                    output_df[col] = None
+        
+        # 数据类型转换和排序
+        if 'module_id' in output_df.columns:
+            output_df['module_id'] = output_df['module_id'].apply(safe_int_conversion)
+        if 'layer_id' in output_df.columns:
+            output_df['layer_id'] = output_df['layer_id'].apply(safe_int_conversion)
+        if 'position' in output_df.columns:
+            output_df['position'] = output_df['position'].apply(safe_int_conversion)
+        if 'item_width' in output_df.columns:
+            output_df['item_width'] = output_df['item_width'].apply(safe_int_conversion)
+        if 'facing' in output_df.columns:
+            output_df['facing'] = output_df['facing'].apply(safe_int_conversion)
+        if 'vert_facing' in output_df.columns:
+            output_df['vert_facing'] = output_df['vert_facing'].apply(safe_int_conversion)
+        if 'module_width' in output_df.columns:
+            output_df['module_width'] = output_df['module_width'].apply(safe_int_conversion)
+        
+        if 'module_id' in output_df.columns and 'layer_id' in output_df.columns and 'position' in output_df.columns:
+            output_df = output_df.sort_values(['module_id', 'layer_id', 'position'])
+        output_df = output_df.reset_index(drop=True)
+        
+        return output_df
+        
+    except Exception as e:
+        print(f"生成输出数据异常: {e}")
+        return var_dict['bases_data']['pog_data']
+
+def switch_item_func(var_dict):
+    """
+    SKU互换主函数
+    
+    Args:
+        var_dict: 包含基础数据和互换参数的字典
+            - bases_data: 基础数据
+            - item1: 第一个要互换的商品
+            - item2: 第二个要互换的商品
+            
+    Returns:
+        dict: 包含新POG数据和状态的字典
+            - pog_data: 新的POG数据
+            - status: 成功或失败状态
+            - msg: 状态信息
+    """
+    try:
+        print("=" * 50)
+        print("开始执行SKU互换功能")
+        print("=" * 50)
+        
+        # 获取互换参数
+        if 'item1' not in var_dict or 'item2' not in var_dict:
+            return {
+                'pog_data': var_dict['bases_data']['pog_data'],
+                'status': 'fail',
+                'msg': '缺少互换参数: item1 和 item2'
+            }
+        
+        sku1 = var_dict['item1']
+        sku2 = var_dict['item2']
+        
+        print(f"互换商品: {sku1} ↔ {sku2}")
+        
+        # 检查SKU数据是否为空
+        if var_dict['bases_data']['sku_data'].empty:
+            return {
+                'pog_data': var_dict['bases_data']['pog_data'],
+                'status': 'fail',
+                'msg': 'SKU数据为空，无法执行互换'
+            }
+        
+        # 步骤1: 定位物品位置
+        print(f"\n步骤1: 定位物品位置")
+        sku1_info = _get_sku_info(var_dict, sku1)
+        sku2_info = _get_sku_info(var_dict, sku2)
+        
+        print(f"✓ SKU {sku1}: 模块{sku1_info['module_id']}层{sku1_info['layer_id']} 位置{sku1_info['position']}mm 宽度{sku1_info['item_width']}mm 高度{sku1_info['height']}mm")
+        print(f"✓ SKU {sku2}: 模块{sku2_info['module_id']}层{sku2_info['layer_id']} 位置{sku2_info['position']}mm 宽度{sku2_info['item_width']}mm 高度{sku2_info['height']}mm")
+        
+        # 步骤2: 检查特殊规则
+        rule_valid, rule_message = _validate_special_rules(var_dict, sku1, sku2)
+        if not rule_valid:
+            return {
+                'pog_data': var_dict['bases_data']['pog_data'],
+                'status': 'fail',
+                'msg': rule_message
+            }
+        
+        # 步骤3: 高度可行性校验
+        height_valid, height_message = _validate_height_feasibility(var_dict, sku1, sku2, sku1_info, sku2_info)
+        if not height_valid:
+            return {
+                'pog_data': var_dict['bases_data']['pog_data'],
+                'status': 'fail',
+                'msg': height_message
+            }
+        
+        # 步骤4: 空间充足性校验
+        space_valid, space_message = _validate_space_sufficiency(var_dict, sku1_info, sku2_info)
+        if not space_valid:
+            return {
+                'pog_data': var_dict['bases_data']['pog_data'],
+                'status': 'fail',
+                'msg': space_message
+            }
+        
+        # 步骤5: 执行互换
+        _perform_swap(var_dict, sku1, sku2, sku1_info, sku2_info)
+        
+        # 步骤6: 重新调整所有位置
+        print(f"\n步骤5: 重新调整陈列位置")
+        _readjust_all_positions(var_dict)
+        
+        # 生成输出数据
+        output_df = _get_output_data(var_dict)
+        
+        print("\n" + "=" * 50)
+        print("✓ SKU互换完成!")
+        print("=" * 50)
+        
+        return {
+            'pog_data': output_df,
+            'status': 'success',
+            'msg': 'SKU互换成功'
+        }
+        
+    except Exception as e:
+        print(f"SKU互换异常: {e}")
+        return {
+            'pog_data': var_dict['bases_data']['pog_data'],
+            'status': 'fail',
+            'msg': f'互换异常: {str(e)}'
+        }
+
+# 使用示例
+def main():
+    """主函数 - 演示如何使用SKU互换功能"""
+    print("=== SKU互换工具（函数式版本 - 支持托盘固定位置）===")
+    
+    try:
+        # 初始化var_dict
+        var_dict = initialize_var_dict()
+        
+        # 设置互换参数
+        var_dict['item1'] = 101371444  # 第一个要互换的商品
+        var_dict['item2'] = 100900711  # 第二个要互换的商品
+        
+        # 执行SKU互换
+        result = switch_item_func(var_dict)
+        
+        # 输出结果
+        if result['status'] == 'success':
+            print(f"\n✓ SKU互换成功!")
+            print(f"状态信息: {result['msg']}")
+            
+            # 保存结果
+            output_file = f'swap_{var_dict["item1"]}_and_{var_dict["item2"]}_result.csv'
+            result['pog_data'].to_csv(output_file, index=False, encoding='utf-8')
+            print(f"✓ 互换结果已保存到: {output_file}")
+            
+            # 显示互换结果预览
+            print("\n互换结果预览:")
+            swapped_items = result['pog_data'][result['pog_data']['item_code'].isin([var_dict['item1'], var_dict['item2']])]
+            print(swapped_items[['item_code', 'module_id', 'layer_id', 'position', 'item_width']])
+        else:
+            print(f"\n✗ SKU互换失败: {result['msg']}")
+            
+    except Exception as e:
+        print(f"程序执行异常: {e}")
+
+if __name__ == "__main__":
+    main()
