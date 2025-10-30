@@ -73,9 +73,9 @@ def add_item_func(var_dict):
 
 def check_tray_item(item_code, tray_config):
     """检查商品是否为托盘商品且不能在商品区域陈列"""
-    # 这里简化实现，实际应根据业务规则判断
-    # 假设托盘配置中有相关字段标识
-    return False  # 暂时返回False，实际需要根据业务逻辑实现
+    # 简化实现，暂时返回False
+    # TODO：补全这里
+    return False
 
 def locate_item_position(item_code, pog_data, item_attributes, brand_hierarchy, sales_data):
     """
@@ -152,8 +152,8 @@ def get_item_info(item_code, item_attributes, brand_hierarchy):
 def get_item_width(item_code, item_attributes):
     """获取商品宽度"""
     # 这里需要根据实际情况获取商品宽度
-    # 简化实现：返回一个默认宽度
-    return 80  # 默认80mm
+    # 简化实现：返回默认值80
+    return 80
 
 def find_matching_position(level_criteria, pog_data, item_attributes, brand_hierarchy):
     """根据层级条件查找匹配的位置"""
@@ -177,7 +177,7 @@ def find_matching_position(level_criteria, pog_data, item_attributes, brand_hier
 
 def get_items_by_hierarchy(level_criteria, pog_data, item_attributes, brand_hierarchy):
     """根据层级条件获取匹配的商品"""
-    # 这里需要实现根据品牌层级条件筛选商品的逻辑
+    # TODO：这里需要实现根据品牌层级条件筛选商品的逻辑
     # 简化实现：返回所有商品进行测试
     return pog_data[pog_data['item_type'] == 'item']
 
@@ -430,6 +430,7 @@ if __name__ == "__main__":
     
     print(f"执行状态: {result['status']}")
     if result['status'] == 'success':
+        result['pog_data'].to_csv('add_pog_result.csv', index=False)
         print("商品添加成功！")
         print(f"新pog_data形状: {result['pog_data'].shape}")
     else:
