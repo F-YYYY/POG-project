@@ -90,46 +90,80 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
             'success': False,
             'error_msg': f'未找到商品 {item_code} 的属性信息'
         }
-    
-    # item_width = item_attributes_detail[]
 
     # 获取商品的品牌层级信息
     series = item_info.get('series')
     brand = item_info.get('brand')
     brand_label = item_info.get('brand_label')
-    
-    # 按照层级从细到粗查找匹配位置
-    hierarchy_levels = [
-        {'brand_label': brand_label, 'brand': brand, 'series': series, 'item': item_code, 'matching_position' : None},  # 最细粒度
-        {'brand_label': brand_label, 'brand': brand, 'series': series, 'matching_position' : None},  # 系列
-        {'brand_label': brand_label, 'brand': brand, 'matching_position' : None},  # 仅品牌
-        {'brand_label': brand_label, 'matching_position' : None}  # 品牌集合
-    ]
-    
-    # for level in hierarchy_levels:
-    #     position = find_matching_position(level, pog_data, item_attributes, brand_2_brand_label)
-    #     if position is not None:
-    #         return {
-    #             'success': True,
-    #             'module': position['module'],
-    #             'layer': position['layer'],
-    #             'item_width': width
-    #         }
         
     # 遍历现有pog_data中的所有商品，寻找匹配的位置
+    matching_result = None
     for item_index in range(0, len(pog_data)):
         matching_item_code = pog_data.iloc[item_index]['item_code']
+        # 若当前pog布局中正好有正在添加的item，直接返回
         if matching_item_code == item_code:
-            return # TODO：这里没写完
+            return {
+                'module' : pog_data.iloc[item_index]['module'],
+                'layer' : pog_data.iloc[item_index]['layer_id'],
+                'matching_level' : 'same_item',
+                'success': True
+            }
 
         matching_item_info = get_item_info(matching_item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
+        matching_series = matching_item_info.get('series')
+        matching_brand = matching_item_info.get('brand')
+        matching_brand_label = matching_item_info.get('brand_label')
+        if matching_brand_label == brand_label:
+            if matching_brand == brand:
+                if matching_series == series:   # 品牌集合、品牌、系列皆匹配，直接返回
+                    return {
+                    'module' : pog_data.iloc[item_index]['module'],
+                    'layer' : pog_data.iloc[item_index]['layer_id'],
+                    'matching_level' : 'series',
+                    'name_for_searching_layer' : matching_series
+                    }
+                elif matching_result['matching_level'] == 'brand_label':   # 仅品牌集合、品牌匹配
+                    matching_result = {
+                    'module' : pog_data.iloc[item_index]['module'],
+                    'layer' : pog_data.iloc[item_index]['layer_id'],
+                    'matching_level' : 'brand',
+                    'name_for_searching_layer' : matching_brand
+                    }
+            elif matching_result == None:   # 仅品牌集合匹配
+                matching_result = {
+                    'module' : pog_data.iloc[item_index]['module'],
+                    'layer' : pog_data.iloc[item_index]['layer_id'],
+                    'matching_level' : 'brand_label',
+                    'name_for_searching_layer' : matching_brand_label
+                    }
+    # 如果所有层级都找不到匹配
+    if matching_result == None:
+        return {
+        'success': False,
+        'error_msg': f'无法为商品 {item_code} 匹配到相同的商品层级'
+    }
+
+    # 找到匹配的层级，再次遍历现有pog_data，查找匹配层级的所有layer
+    if matching_result['matching_level'] == 'series':
+        for item_index in range(0, len)
+    
+    
+    
+    
+    else : return {
+        'success': False,
+        'error_msg': '函数locate_item_position执行错误'
+    }
+
+
+    return 1
+                
+
+
 
     
-    # 如果所有层级都找不到匹配
-    return {
-        'success': False,
-        'error_msg': f'无法为商品 {item_code} 找到合适的摆放位置'
-    }
+    
+    
 
 def get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_brand_label):
     """获取商品的完整属性信息"""
@@ -429,7 +463,7 @@ if __name__ == "__main__":
     
     print(f"执行状态: {result['status']}")
     if result['status'] == 'success':
-        result['pog_data'].to_csv('add_pog_result.csv', index=False)
+        # result['pog_data'].to_csv('add_pog_result.csv', index=False) # 暂时
         print("商品添加成功！")
         print(f"新pog_data形状: {result['pog_data'].shape}")
     else:
