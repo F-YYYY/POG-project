@@ -17,8 +17,9 @@ def add_item_func(var_dict):
         pog_data = bases_data['pog_data'].copy()
         tray_item = bases_data['tray_item']
         item_attributes = bases_data['item_attributes']
+        item_attributes_detail = bases_data['item_attributes_detail']
         sales_data = bases_data['sales_data']
-        brand_hierarchy = bases_data['brand_hierarchy']
+        brand_2_brand_label = bases_data['brand_2_brand_label']
         
         # 从var_dict中获取即将添加的商品编号
         add_item = var_dict['add_item']
@@ -32,7 +33,7 @@ def add_item_func(var_dict):
             }
         
         # Step2：定位商品位置
-        position_result = locate_item_position(add_item, pog_data, item_attributes, brand_hierarchy, sales_data)
+        position_result = locate_item_position(add_item, pog_data, item_attributes, item_attributes_detail, brand_2_brand_label, sales_data)
         if not position_result['success']:
             return {
                 'pog_data': pog_data,
@@ -77,49 +78,52 @@ def check_tray_item(item_code, tray_config):
     # TODO：补全这里
     return False
 
-def locate_item_position(item_code, pog_data, item_attributes, brand_hierarchy, sales_data):
+def locate_item_position(item_code, pog_data, item_attributes, item_attributes_detail, brand_2_brand_label, sales_data):
     """
     定位商品应该放在哪个模块和层
     按照品牌层级结构从细到粗查找
     """
     # 获取商品属性
-    item_info = get_item_info(item_code, item_attributes, brand_hierarchy)
+    item_info = get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
     if item_info is None:
         return {
             'success': False,
             'error_msg': f'未找到商品 {item_code} 的属性信息'
         }
     
-    item_width = get_item_width(item_code, item_attributes)
-    if item_width is None:
-        return {
-            'success': False,
-            'error_msg': f'未找到商品 {item_code} 的宽度信息'
-        }
-    
+    # item_width = item_attributes_detail[]
+
     # 获取商品的品牌层级信息
-    brand = item_info.get('brand')
     series = item_info.get('series')
-    category = item_info.get('category')
+    brand = item_info.get('brand')
     brand_label = item_info.get('brand_label')
     
     # 按照层级从细到粗查找匹配位置
     hierarchy_levels = [
-        {'brand': brand, 'series': series, 'category': category},  # 最细粒度
-        {'brand': brand, 'series': series},  # 品牌+系列
-        {'brand': brand},  # 仅品牌
-        {'brand_label': brand_label}  # 品牌集合
+        {'brand_label': brand_label, 'brand': brand, 'series': series, 'item': item_code, 'matching_position' : None},  # 最细粒度
+        {'brand_label': brand_label, 'brand': brand, 'series': series, 'matching_position' : None},  # 系列
+        {'brand_label': brand_label, 'brand': brand, 'matching_position' : None},  # 仅品牌
+        {'brand_label': brand_label, 'matching_position' : None}  # 品牌集合
     ]
     
-    for level in hierarchy_levels:
-        position = find_matching_position(level, pog_data, item_attributes, brand_hierarchy)
-        if position is not None:
-            return {
-                'success': True,
-                'module': position['module'],
-                'layer': position['layer'],
-                'item_width': item_width
-            }
+    # for level in hierarchy_levels:
+    #     position = find_matching_position(level, pog_data, item_attributes, brand_2_brand_label)
+    #     if position is not None:
+    #         return {
+    #             'success': True,
+    #             'module': position['module'],
+    #             'layer': position['layer'],
+    #             'item_width': width
+    #         }
+        
+    # 遍历现有pog_data中的所有商品，寻找匹配的位置
+    for item_index in range(0, len(pog_data)):
+        matching_item_code = pog_data.iloc[item_index]['item_code']
+        if matching_item_code == item_code:
+            return # TODO：这里没写完
+
+        matching_item_info = get_item_info(matching_item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
+
     
     # 如果所有层级都找不到匹配
     return {
@@ -127,38 +131,31 @@ def locate_item_position(item_code, pog_data, item_attributes, brand_hierarchy, 
         'error_msg': f'无法为商品 {item_code} 找到合适的摆放位置'
     }
 
-def get_item_info(item_code, item_attributes, brand_hierarchy):
+def get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_brand_label):
     """获取商品的完整属性信息"""
     # 从商品属性表获取基本信息
     item_row = item_attributes[item_attributes['ITEM_NBR'] == int(item_code)]
-    if item_row.empty:
+    item_row_detail = item_attributes_detail[item_attributes_detail['item_idnt'] == int(item_code)]
+    brand_name = item_row_detail.iloc[0]['brandname_cn']
+    brand_row = brand_2_brand_label[brand_2_brand_label['brand'] == brand_name]
+    if item_row.empty or item_row_detail.empty or brand_row.empty:     # 暂时只考虑添加在三个表中都有信息的商品
         return None
     
     item_info = {
         'item_code': item_code,
         'series': item_row.iloc[0]['SERIES'],
-        'item_name': item_row.iloc[0]['ITEM_NAME']
+        'item_name': item_row.iloc[0]['ITEM_NAME'],
+        'width': item_row_detail.iloc[0]['item_breadth'],
+        'brand_name' : brand_name,
+        'brand_label_name' : brand_row.iloc[0]['brand_label']
     }
-    
-    # 从品牌层级表获取品牌信息（这里需要根据实际业务逻辑匹配）
-    # 简化实现：假设可以通过系列或其他方式匹配到品牌
-    brand_match = brand_hierarchy[brand_hierarchy['brand'].str.contains(item_info['series'], na=False)]
-    if not brand_match.empty:
-        item_info['brand'] = brand_match.iloc[0]['brand']
-        item_info['brand_label'] = brand_match.iloc[0]['brand_label']
-    
+
     return item_info
 
-def get_item_width(item_code, item_attributes):
-    """获取商品宽度"""
-    # 这里需要根据实际情况获取商品宽度
-    # 简化实现：返回默认值80
-    return 80
-
-def find_matching_position(level_criteria, pog_data, item_attributes, brand_hierarchy):
+def find_matching_position(level_criteria, pog_data, item_attributes, brand_2_brand_label):
     """根据层级条件查找匹配的位置"""
     # 获取满足层级条件的所有商品
-    matching_items = get_items_by_hierarchy(level_criteria, pog_data, item_attributes, brand_hierarchy)
+    matching_items = get_items_by_hierarchy(level_criteria, pog_data, item_attributes, brand_2_brand_label)
     
     if matching_items.empty:
         return None
@@ -175,7 +172,7 @@ def find_matching_position(level_criteria, pog_data, item_attributes, brand_hier
         'layer': max_space_layer['layer_id']
     }
 
-def get_items_by_hierarchy(level_criteria, pog_data, item_attributes, brand_hierarchy):
+def get_items_by_hierarchy(level_criteria, pog_data, item_attributes, brand_2_brand_label):
     """根据层级条件获取匹配的商品"""
     # TODO：这里需要实现根据品牌层级条件筛选商品的逻辑
     # 简化实现：返回所有商品进行测试
@@ -407,20 +404,22 @@ def get_sorted_items_by_sales(items_df, sales_data, ascending=True):
 # 使用示例
 if __name__ == "__main__":
     # 数据加载
-    pog_data = pd.read_csv('pog_result.csv')
-    tray_item = pd.read_csv('pog_test_haircare_tray.csv')
-    item_attributes = pd.read_csv('pog_test_haircare_test.csv')
-    brand_hierarchy = pd.read_csv('brand_2_brand_label.csv')
-    sales_data = pd.read_csv('sales_item_sum.csv')
+    pog_result = pd.read_csv('pog_result.csv')
+    pog_test_haircare_tray = pd.read_csv('pog_test_haircare_tray.csv')
+    pog_test_haircare_test = pd.read_csv('pog_test_haircare_test.csv')
+    ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V = pd.read_csv('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
+    brand_2_brand_label = pd.read_csv('brand_2_brand_label.csv')
+    sales_item_sum = pd.read_csv('sales_item_sum.csv')
     
     # 构建var_dict
     var_dict = {
         'bases_data': {
-            'pog_data': pog_data,
-            'tray_item': tray_item,
-            'item_attributes': item_attributes,
-            'brand_hierarchy': brand_hierarchy,
-            'sales_data': sales_data
+            'pog_data': pog_result,
+            'tray_item': pog_test_haircare_tray,
+            'item_attributes': pog_test_haircare_test,
+            'item_attributes_detail': ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V,
+            'brand_2_brand_label': brand_2_brand_label,
+            'sales_data': sales_item_sum
         },
         'add_item': 101437322  # 示例商品编码，位于pog_test_haircare_test.csv的首行
     }
