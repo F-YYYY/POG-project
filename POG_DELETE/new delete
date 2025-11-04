@@ -1,0 +1,264 @@
+import pandas as pd
+from typing import Dict, Optional, List, Tuple
+
+
+class RemoveSKU:
+    """
+    RemoveSKU 类
+    ------------------
+    从POG中删除指定SKU，并禁止删除托盘(tray)或托盘上的商品。
+    新增功能：
+    ✅ 支持按指定 module_id、layer_id 精确匹配托盘。
+    """
+
+    def __init__(self):
+        self.dataframes: Dict[str, pd.DataFrame] = {}
+        self.affected_layers_by_removal: List[Tuple[int, int]] = []
+        print("✅ RemoveSKU 初始化完成。")
+
+    def remove_sku_items(self, var_dict: Dict):
+        pog_data = var_dict['bases_data']['pog_data']
+        tray_item_data = var_dict['bases_data'].get('tray_item', None)
+        params = var_dict['func'].get('del_item_func', {})
+
+        delete_skus = params.get('del_item_list', [])
+        fixed_module_id = params.get('module_id', None)
+        fixed_layer_id = params.get('layer_id', None)
+
+        print(f"\n--- 开始执行 'remove_sku_items' 删除SKU: {delete_skus} ---")
+        print(f"📍 固定范围：module_id={fixed_module_id}, layer_id={fixed_layer_id}")
+
+        if pog_data is None or pog_data.empty:
+            return pog_data, {'status': 'fail', 'msg': 'POG数据为空'}
+
+        pog_data['item_code'] = pog_data['item_code'].astype(str)
+
+        # ==== tray-item 对应关系 ====
+        tray_items = []
+        tray_links = {}
+        if tray_item_data is not None and not tray_item_data.empty:
+            try:
+                tray_pair_df = tray_item_data.iloc[:, [0, 1]].copy()
+                tray_pair_df.columns = ['tray_id', 'item_code']
+                tray_pair_df['tray_id'] = tray_pair_df['tray_id'].astype(str)
+                tray_pair_df['item_code'] = tray_pair_df['item_code'].astype(str)
+                tray_items = tray_pair_df['item_code'].tolist()
+                tray_links = dict(zip(tray_pair_df['item_code'], tray_pair_df['tray_id']))
+                print(f"📦 托盘商品识别成功：共 {len(tray_items)} 个 tray-item 关联。")
+            except Exception as e:
+                print(f"⚠️ 读取 tray_item 文件出错: {e}")
+
+        # ==== 检查目标层 ====
+        if fixed_module_id is not None and fixed_layer_id is not None:
+            target_layer = pog_data[
+                (pog_data['module_id'] == fixed_module_id) &
+                (pog_data['layer_id'] == fixed_layer_id)
+            ]
+        else:
+            target_layer = pog_data
+
+        # ==== 禁止删除托盘自身 ====
+        if 'item_type' in pog_data.columns:
+            tray_self = target_layer.loc[target_layer['item_type'] == 'tray', 'item_code'].astype(str).tolist()
+            for code in delete_skus:
+                if str(code) in tray_self:
+                    return pog_data, {
+                        'status': 'fail',
+                        'msg': f'删除失败：SKU {code} 是托盘(tray)商品，禁止删除。'
+                    }
+
+        # ==== 禁止删除托盘上的商品 ====
+        for code in delete_skus:
+            if str(code) in tray_items:
+                tray_id = tray_links.get(str(code))
+                # 检查该 tray 是否出现在当前层
+                tray_exist = target_layer[target_layer['item_code'] == tray_id]
+                if not tray_exist.empty:
+                    return pog_data, {
+                        'status': 'fail',
+                        'msg': f'删除失败：SKU {code} 位于本层托盘 {tray_id} 上，禁止删除。'
+                    }
+
+        # ==== 确认是否找到该商品 ====
+        found_rows = target_layer[target_layer['item_code'].isin(delete_skus)]
+        if found_rows.empty:
+            return pog_data, {
+                'status': 'fail',
+                'msg': f'未找到商品 {delete_skus} 于指定模块 {fixed_module_id}-{fixed_layer_id}'
+            }
+
+        # ==== 记录受影响层 ====
+        affected_layers = found_rows[['module_id', 'layer_id']].drop_duplicates()
+        self.affected_layers_by_removal = [tuple(x) for x in affected_layers.to_numpy()]
+
+        # ==== 执行删除 ====
+        new_pog = pog_data.drop(found_rows.index)
+        removed_num = len(found_rows)
+        print(f"🗑️ 已删除 {removed_num} 条SKU记录。")
+
+        return new_pog, {'status': 'success', 'msg': f'成功删除 {removed_num} 个SKU'}
+
+
+class FillLayerSKU(RemoveSKU):
+    """
+    FillLayerSKU 类
+    ------------------
+    删除SKU后：
+    ✅ 检测tray
+    ✅ 计算剩余空间
+    ✅ 结合sales数据选择销售额最高的商品 double-facing
+    ✅ 否则等距重排
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.affected_layer_space: Optional[pd.DataFrame] = None
+        self.sorted_items_by_position: Dict[Tuple[int, int], pd.DataFrame] = {}
+        self.sales_df: Optional[pd.DataFrame] = None
+        print("✅ FillLayerSKU 初始化完成。")
+
+    def analyze_layer_space(self, pog_data: pd.DataFrame, total_layer_width: int = 1000) -> pd.DataFrame:
+        if pog_data.empty:
+            return pd.DataFrame(columns=['module_id', 'layer_id', 'item_count', 'used_width', 'remaining_width'])
+        layer_summary = pog_data.groupby(['module_id', 'layer_id']).agg(
+            used_width=('item_width', 'sum'),
+            item_count=('item_code', 'count')
+        ).reset_index()
+        layer_summary['total_width'] = total_layer_width
+        layer_summary['remaining_width'] = layer_summary['total_width'] - layer_summary['used_width']
+        return layer_summary
+
+    def calculate_space_for_affected_layers(self, pog_data: pd.DataFrame, total_layer_width: int = 1000):
+        print("\n--- 计算受影响层剩余空间 ---")
+        if not self.affected_layers_by_removal:
+            print("ℹ️ 无受影响层。")
+            return
+        all_layers = self.analyze_layer_space(pog_data, total_layer_width)
+        affected = all_layers.set_index(['module_id', 'layer_id']).reindex(self.affected_layers_by_removal)
+        self.affected_layer_space = affected.reset_index()
+        print("✅ 受影响层空间计算完成。")
+
+    def sort_items_by_position(self, pog_data: pd.DataFrame):
+        print("\n--- 排序受影响层内商品 ---")
+        for mod_id, lay_id in self.affected_layers_by_removal:
+            df = pog_data[(pog_data['module_id'] == mod_id) & (pog_data['layer_id'] == lay_id)].copy()
+            if df.empty:
+                continue
+            sorted_df = df.sort_values(by='position')
+            self.sorted_items_by_position[(mod_id, lay_id)] = sorted_df
+        print("✅ 排序完成。")
+
+    def fill_and_reposition_layers(self, pog_data: pd.DataFrame, total_layer_width: int = 1000):
+        print("\n--- 开始执行填充与重新定位 ---")
+        updated_layers = []
+        for layer_key, layer_df in self.sorted_items_by_position.items():
+            mod_id, lay_id = layer_key
+            layer_space = self.analyze_layer_space(pog_data)
+            remain = layer_space[
+                (layer_space['module_id'] == mod_id) &
+                (layer_space['layer_id'] == lay_id)
+            ]['remaining_width'].iloc[0]
+            current_remain = remain
+
+            # ==== 根据 sales 排序 ====
+            layer_df = layer_df.copy()
+            if self.sales_df is not None:
+                self.sales_df['item_code'] = self.sales_df['item_code'].astype(str)
+                layer_df = layer_df.merge(self.sales_df[['item_code', 'sales']], on='item_code', how='left')
+            else:
+                layer_df['sales'] = 0
+
+            layer_df = layer_df.sort_values(by='sales', ascending=False)
+
+            copies_to_add = {}
+            for _, row in layer_df.iterrows():
+                width = row['item_width']
+                code = row['item_code']
+                if current_remain >= width:
+                    copies_to_add[code] = 1
+                    current_remain -= width
+                    print(f"💰 双陈列商品选择：{code} (sales={row['sales']})")
+                    break
+            else:
+                print(f"ℹ️ 本层 {mod_id}-{lay_id} 无可双陈列商品。")
+
+            # ==== 重新布局 ====
+            new_items = []
+            for _, row in layer_df.iterrows():
+                new_items.append(row.to_dict())
+                if row['item_code'] in copies_to_add:
+                    copy = row.to_dict()
+                    copy['position'] = -1
+                    new_items.append(copy)
+
+            total_width = sum(i['item_width'] for i in new_items)
+            spacing = (total_layer_width - total_width) / (len(new_items) + 1)
+            pos = spacing
+            for item in new_items:
+                item['position'] = pos
+                pos += item['item_width'] + spacing
+
+            updated_layers.append(pd.DataFrame(new_items))
+
+        if not updated_layers:
+            return pog_data, {'status': 'success', 'msg': '无可更新层'}
+
+        new_layers = pd.concat(updated_layers, ignore_index=True)
+        unaffected = pog_data.set_index(['module_id', 'layer_id']).drop(
+            index=pd.MultiIndex.from_tuples(self.affected_layers_by_removal, names=['module_id', 'layer_id']),
+            errors='ignore'
+        ).reset_index()
+        new_pog = pd.concat([unaffected, new_layers], ignore_index=True)
+        print("✅ 填充与重新定位完成。")
+        return new_pog, {'status': 'success', 'msg': '填充与重新定位成功'}
+
+    def run_delete_fill_pipeline(self, var_dict: Dict) -> Tuple[pd.DataFrame, Dict]:
+        pog_data = var_dict['bases_data']['pog_data']
+        pog_data['item_code'] = pog_data['item_code'].astype(str)
+        self.sales_df = var_dict['bases_data'].get('sales_item_sum', None)
+
+        var_dict['bases_data']['pog_data'] = pog_data
+
+        new_pog, status = self.remove_sku_items(var_dict)
+        if status['status'] == 'fail':
+            return new_pog, status
+
+        self.calculate_space_for_affected_layers(new_pog)
+        self.sort_items_by_position(new_pog)
+        final_pog, status2 = self.fill_and_reposition_layers(new_pog)
+        return final_pog, status2
+
+
+# ===========================
+# ✅ 示例调用
+# ===========================
+if __name__ == "__main__":
+    pog_file = r"C:\Users\fy\Desktop\POG\新的\开发所需测试数据\开发所需测试数据\pog_result.csv"
+    tray_item_file = r"C:\Users\fy\Desktop\POG\新的\开发所需测试数据\开发所需测试数据\pog_test_haircare_tray_item.csv"
+    sales_file = r"C:\Users\fy\Desktop\POG\新的\开发所需测试数据\开发所需测试数据\sales_item_sum.csv"
+
+    var_dict = {
+        'bases_data': {
+            'pog_data': pd.read_csv(pog_file),
+            'tray_item': pd.read_csv(tray_item_file),
+            'sales_item_sum': pd.read_csv(sales_file)
+        },
+        'func': {
+            'del_item_func': {
+                'del_item_list': ['101473131'],
+                'module_id': 6,
+                'layer_id': 2
+            }
+        }
+    }
+
+    filler = FillLayerSKU()
+    new_pog, status = filler.run_delete_fill_pipeline(var_dict)
+
+    print(status)
+    if status['status'] == 'success':
+        output_file = r"C:\Users\fy\Desktop\POG\新的\开发所需测试数据\开发所需测试数据\pog_result_final_output.csv"
+        new_pog.to_csv(output_file, index=False, encoding='utf-8-sig')
+        print(f"✅ 最终结果已导出至: {output_file}")
+    else:
+        print("❌ 操作失败：", status.get('msg', '未知错误'))
