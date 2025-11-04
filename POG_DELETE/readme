@@ -1,0 +1,31 @@
+POG货架商品删除与双倍陈列（Double Facing）逻辑模块 技术文档
+一、模块背景与目标
+在POG（Planogram，货架规划图）系统中，为保持货架陈列逻辑的合理性与物理结构一致性，当用户请求删除某个商品（item_code）时，需要综合判断该商品是否：
+1. 属于Tray（托盘）上的商品——若商品附属于某个Tray，则不能直接删除。
+2. 存在Double Facing逻辑——若允许删除的商品被清除，则应选取销售额（sales）最高的商品进行双倍陈列（Double Facing）填补空位，保证货架完整性与销售最大化。
+
+本模块旨在自动执行这两个逻辑判断与处理过程，输出清晰的处理结果与日志，提升POG数据清理与智能推荐效率。
+二、输入文件说明
+1. result.csv：主POG文件，包含货架层、位置、商品编码等信息。
+2. pog_test_haircare_tray_item.csv：Tray映射表，记录Tray与具体商品的对应关系。
+3. sales_item_sum.csv：商品销售数据表，包含销售额与销量。
+三、核心逻辑与实现思路
+（1）Tray识别逻辑
+模块读取主POG文件与Tray映射表。当用户请求删除某个商品item_code时，系统会在Tray表中搜索该商品是否存在于某个Tray上。若存在Tray（例如tray_id=24），则禁止删除该商品。
+
+（2）正常删除逻辑
+若该商品不在任何Tray上，系统安全地从result中删除该商品记录。
+
+（3）Double Facing逻辑
+删除后触发空位填补策略：读取sales_item_sum.csv，找到sales最高的商品，在当前层中复制一份（双倍陈列），以facing += 1反映在输出文件中。
+
+（4）输出结果
+输出updated_result.csv（更新后POG数据）与delete_log.csv（删除/禁止删除日志）。
+四、日志记录设计
+日志文件字段包括：action（操作类型：delete/skip/double）、item_code、tray_id、layer_id、remark（备注说明）。
+五、模块设计特点
+✅ 数据安全：防止误删Tray关联商品
+✅ 逻辑闭环：删除→判断→double
+✅ 高扩展性：可引入其他销售指标
+✅ 自动日志追溯：便于后期回查
+✅ 与POG主流程无缝衔接
