@@ -45,7 +45,7 @@ def add_item_func(var_dict):
     target_module = position_result['module']
     target_layer = position_result['layer']
     matching_level = position_result['matching_level']
-    item_width = add_item_info['width']
+    add_item_width = add_item_info['width']
     
     # Step3：尝试在目标层插入商品
     pog_info_dict = {
@@ -55,7 +55,7 @@ def add_item_func(var_dict):
         'sales_data' : sales_data
     }   # 在层内再次进行定位时需要用到的商品细节信息
     insert_result = insert_item_to_target_layer(
-        pog_data, add_item_info, item_width, target_module, target_layer, matching_level, pog_info_dict
+        pog_data, add_item_code, add_item_width, target_module, target_layer, matching_level, pog_info_dict
     )
     
     if insert_result['success']:
@@ -109,6 +109,7 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
     # 遍历现有pog_data中的所有商品，寻找匹配商品的位置
     matching_result = None
     current_level = 0  # 0:无匹配, 1:品牌集合, 2:品牌, 3:系列
+    # 第一次遍历，确定匹配层级
     for idx in range(0, len(pog_data)):
         matching_item_code = pog_data.iloc[idx]['item_code']
         # 若为托盘商品，暂时直接跳过
@@ -117,7 +118,7 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
         # 若当前pog布局中正好有正在添加的item，直接返回
         if matching_item_code == item_code:
             return {
-                'module' : pog_data.iloc[idx]['module'],
+                'module' : pog_data.iloc[idx]['module_id'],
                 'layer' : pog_data.iloc[idx]['layer_id'],
                 'matching_item_code' : matching_item_code,
                 'matching_level' : 'same_item',
@@ -132,33 +133,32 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
             if matching_brand == brand:
                 if matching_series == series:   # 品牌集合、品牌、系列皆匹配
                     matching_result = {
-                    'module' : pog_data.iloc[idx]['module'],
+                    'module' : pog_data.iloc[idx]['module_id'],
                     'layer' : pog_data.iloc[idx]['layer_id'],
                     'matching_item_code' : matching_item_code,
                     'matching_index' : idx,
                     'matching_level' : 'series',
-                    'name_for_searching_layer' : matching_series
+                    'name_for_searching_layer' : matching_series    # 用于第二次遍历匹配的系列名
                     }
                     current_level = 3
-                    break   # 系列已经是除同一品类外的最细粒度
                 elif current_level < 2:   # 仅品牌集合、品牌匹配，且当前的匹配等级较小
                     matching_result = {
-                    'module' : pog_data.iloc[idx]['module'],
+                    'module' : pog_data.iloc[idx]['module_id'],
                     'layer' : pog_data.iloc[idx]['layer_id'],
                     'matching_item_code' : matching_item_code,
                     'matching_index' : idx,
                     'matching_level' : 'brand',
-                    'name_for_searching_layer' : matching_brand
+                    'name_for_searching_layer' : matching_brand     # 用于第二次遍历匹配的系列名
                     }
                     current_level = 2
             elif current_level < 1:   # 仅品牌集合匹配，且当前无匹配
                 matching_result = {
-                    'module' : pog_data.iloc[idx]['module'],
+                    'module' : pog_data.iloc[idx]['module_id'],
                     'layer' : pog_data.iloc[idx]['layer_id'],
                     'matching_item_code' : matching_item_code,
                     'matching_index' : idx,
                     'matching_level' : 'brand_label',
-                    'name_for_searching_layer' : matching_brand_label
+                    'name_for_searching_layer' : matching_brand_label   # 用于第二次遍历匹配的品牌集合名    
                     }
                 current_level = 1
     # 如果所有层级都找不到匹配
@@ -168,7 +168,7 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
         'error_msg': f'无法为商品 {item_code} 匹配到相同的商品层级'
     }
 
-    # 根据匹配的层级，再次遍历现有pog_data，查找匹配层级的所有layer
+    # 第二次遍历现有pog_data，根据匹配的层级，查找匹配层级的所有layer
     optional_layer = [] # 用于存储所有同level的layer
     matching_level = matching_result['matching_level']
     matching_index = matching_result['matching_index']
@@ -231,15 +231,15 @@ def calculate_layer_space(module_id, layer_id, pog_data):
             return 0
             
     module_width = layer_items['module_width'].iloc[0]
-    used_space = layer_items['item_width'].sum()
+    layer_items['total_item_width'] = layer_items['item_width'] * layer_items['facing']
+    used_space = layer_items['total_item_width'].sum()
     remaining_space = module_width - used_space
     
     return remaining_space
 
-def insert_item_to_target_layer(pog_data, item_info, item_width, target_module, target_layer, matching_level, pog_info_dict):
+def insert_item_to_target_layer(pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict):
     """在目标层插入商品"""
     new_pog_data = pog_data.copy()
-    item_code = item_info['item_code']
     
     # 获取目标层的所有商品
     layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
@@ -288,7 +288,7 @@ def insert_and_rearrange(pog_data, item_code, item_width, target_module, target_
     new_pog_data = pog_data.copy()
 
     if matching_level == 'same_item':
-        new_pog_data[new_pog_data['item_code'] == item_code].iloc[0]['facing'] += 1 # 直接令facing+1
+        new_pog_data.loc[new_pog_data['item_code'] == item_code, 'facing'] += 1 # 直接令facing+1
     else:
         # 在末尾添加商品
         layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
@@ -365,10 +365,10 @@ def rearrange_layer_item_gap(pog_data, target_module, target_layer):
     current_position = 0
     for idx in sorted_layer_indices[range(0, ceil_cnt)]:
         new_pog_data.loc[idx, 'position'] = current_position
-        current_position += new_pog_data.loc[idx, 'item_width'] + np.ceil(avg_gap)
+        current_position += new_pog_data.loc[idx, 'item_width'] * new_pog_data.loc[idx, 'facing'] + np.ceil(avg_gap)
     for idx in sorted_layer_indices[range(ceil_cnt, len(sorted_layer_indices))]:
         new_pog_data.loc[idx, 'position'] = current_position
-        current_position += new_pog_data.loc[idx, 'item_width'] + np.floor(avg_gap)
+        current_position += new_pog_data.loc[idx, 'item_width'] * new_pog_data.loc[idx, 'facing'] + np.floor(avg_gap)
     
     return new_pog_data
 
@@ -454,7 +454,8 @@ def get_sorted_items_by_sales(items_df, sales_data, ascending=True):
 # 使用示例
 if __name__ == "__main__":
     # 数据加载
-    pog_result = pd.read_csv('pog_result.csv')
+    # pog_result = pd.read_csv('pog_result.csv')
+    pog_result = pd.read_csv('add_pog_result.csv')
     pog_test_haircare_tray = pd.read_csv('pog_test_haircare_tray.csv')
     pog_test_haircare_test = pd.read_csv('pog_test_haircare_test.csv')
     ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V = pd.read_csv('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
@@ -479,7 +480,8 @@ if __name__ == "__main__":
     
     print(f"执行状态: {result['status']}")
     if result['status'] == 'success':
-        result['pog_data'].to_csv('add_pog_result.csv', index=False) # 暂时
+        # result['pog_data'].to_csv('add_pog_result.csv', index=False)
+        result['pog_data'].to_csv('add_pog_result2.csv', index=False)
         print("商品添加成功！")
         print(f"新pog_data形状: {result['pog_data'].shape}")
     else:
