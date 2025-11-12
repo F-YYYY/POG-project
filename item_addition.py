@@ -307,18 +307,9 @@ def insert_and_rearrange(pog_data, item_code, item_width, target_module, target_
         brand_2_brand_label = pog_info_dict['brand_2_brand_label']
 
         sorted_layer_items = layer_items.sort_values(by = 'position', ascending = True)
-        # item_info = get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
-        # series = item_info['series']
-        # if matching_level == 'series':  # 当且仅当匹配等级为'series'或'brand'时才需要另外定位，对于其他匹配等级，则直接放在layer的最左侧，即position保持为-1（姑且默认一个layer只会摆同一个brand_label的商品）
-        #     for idx in range(1, len(sorted_layer_items)):
-        #         matching_item_code = pog_data.iloc[idx]['item_code']
-        #         get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
-        #         matching_series = 
-        #         if matching_series == series:
-        #             sorted_layer_items.iloc[0]['postion'] = sorted_layer_items.iloc[idx]['postion'] - 0.5   
         position_result = locate_item_position(item_code, sorted_layer_items, item_attributes, item_attributes_detail, brand_2_brand_label)
         matching_item_code = position_result['matching_item_code']
-        new_pog_data.iloc[-1]['position'] = (sorted_layer_items[sorted_layer_items['item_code'] == matching_item_code].iloc[0]['position'] - 0.5)      # 直接将新加入的商品插在前面
+        new_pog_data.loc[len(new_pog_data)-1, 'position'] = (sorted_layer_items[sorted_layer_items['item_code'] == matching_item_code].iloc[0]['position'] - 0.5)      # 直接将新加入的商品插在前面（这里修改的列索引不知道为什么必须是len(new_pog_data)-1）
             
     
     # 调整该层所有商品的间距
