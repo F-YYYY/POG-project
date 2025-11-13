@@ -26,6 +26,12 @@ def add_item_func(var_dict):
     
     # Step1：检查是否为托盘商品
     add_item_info = get_item_info(add_item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
+    if add_item_info == None:
+        return {
+            'pog_data': pog_data,
+            'status': 'fail',
+            'error_msg': f'未找到商品标号 {add_item_code}相应的商品信息 '
+        }
     if is_tray_item(add_item_code):
         return {
             'pog_data': pog_data,
@@ -103,8 +109,8 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
 
     # 获取商品的品牌层级信息
     series = item_info['series']
-    brand = item_info['brand_name']
-    brand_label = item_info['brand_label_name']
+    brand = item_info['brand']
+    brand_label = item_info['brand_label']
         
     # 遍历现有pog_data中的所有商品，寻找匹配商品的位置
     matching_result = None
@@ -127,8 +133,8 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
 
         matching_item_info = get_item_info(matching_item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
         matching_series = matching_item_info['series']
-        matching_brand = matching_item_info['brand_name']
-        matching_brand_label = matching_item_info['brand_label_name']
+        matching_brand = matching_item_info['brand']
+        matching_brand_label = matching_item_info['brand_label']
         if matching_brand_label == brand_label:
             if matching_brand == brand:
                 if matching_series == series:   # 品牌集合、品牌、系列皆匹配
@@ -172,8 +178,10 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
     optional_layer = [] # 用于存储所有同level的layer
     matching_level = matching_result['matching_level']
     matching_index = matching_result['matching_index']
-    for idx in range(matching_index, len(pog_data)):
+    for idx in range(matching_index , len(pog_data)):
         matching_item_code = pog_data.iloc[idx]['item_code']
+        if is_tray_item(matching_item_code):
+            continue
         matching_item_info = get_item_info(matching_item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
         matching_level_name = matching_item_info.get(matching_level)
         if matching_level_name == matching_result['name_for_searching_layer']:
@@ -207,13 +215,14 @@ def get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_br
     if item_row.empty or item_row_detail.empty or brand_row.empty:     # 暂时只考虑添加在三个表中都有信息的商品
         return None
     
+    item_width = item_row_detail.iloc[0]['item_breadth'] * 10 # ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv表使用的单位为cm，需要换算
     item_info = {
         'item_code': item_code,
         'series': item_row.iloc[0]['SERIES'],
         'item_name': item_row.iloc[0]['ITEM_NAME'],
-        'width': item_row_detail.iloc[0]['item_breadth'],
-        'brand_name' : brand_name,
-        'brand_label_name' : brand_row.iloc[0]['brand_label']
+        'width': item_width,
+        'brand' : brand_name,
+        'brand_label' : brand_row.iloc[0]['brand_label']
     }
 
     return item_info
@@ -454,8 +463,7 @@ def get_sorted_items_by_sales(items_df, sales_data, ascending=True):
 # 使用示例
 if __name__ == "__main__":
     # 数据加载
-    # pog_result = pd.read_csv('pog_result.csv')
-    pog_result = pd.read_csv('add_pog_result.csv')
+    pog_result = pd.read_csv('pog_result.csv')
     pog_test_haircare_tray = pd.read_csv('pog_test_haircare_tray.csv')
     pog_test_haircare_test = pd.read_csv('pog_test_haircare_test.csv')
     ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V = pd.read_csv('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
@@ -472,7 +480,9 @@ if __name__ == "__main__":
             'brand_2_brand_label': brand_2_brand_label,
             'sales_data': sales_item_sum
         },
-        'add_item': 100006545  # 示例商品编码
+        'add_item': 100006545  # 匹配等级：series
+        # 'add_item': 101437322   # 匹配等级：brand_label
+        # 'add_item': 101426154   # 匹配等级：brand
     }
     
     # 执行函数
@@ -480,8 +490,7 @@ if __name__ == "__main__":
     
     print(f"执行状态: {result['status']}")
     if result['status'] == 'success':
-        # result['pog_data'].to_csv('add_pog_result.csv', index=False)
-        result['pog_data'].to_csv('add_pog_result2.csv', index=False)
+        result['pog_data'].to_csv('add_pog_result.csv', index=False)
         print("商品添加成功！")
         print(f"新pog_data形状: {result['pog_data'].shape}")
     else:
