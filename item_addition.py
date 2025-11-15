@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def add_item_func(var_dict):
+def add_item_func(var_dict, pog_config_org):
     """
     新增一个品，旧品不动 - 场景函数
     
@@ -61,7 +61,7 @@ def add_item_func(var_dict):
         'sales_data' : sales_data
     }   # 在层内再次进行定位时需要用到的商品细节信息
     insert_result = insert_item_to_target_layer(
-        pog_data, add_item_code, add_item_width, target_module, target_layer, matching_level, pog_info_dict
+        pog_data, add_item_code, add_item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org
     )
     
     if insert_result['success']:
@@ -94,7 +94,7 @@ def is_tray_item(item_code):
         return False
     # TODO：这里先用最简单的实现方法，具体逻辑有待确认和推敲
 
-def locate_item_position(item_code, pog_data, item_attributes, item_attributes_detail, brand_2_brand_label):
+def locate_item_position(item_code, pog_data, item_attributes, item_attributes_detail, brand_2_brand_label , pog_config_org = None):
     """
     定位商品应该放在哪个模块和层
     按照品牌层级结构从细到粗查找
@@ -137,7 +137,7 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
         matching_brand_label = matching_item_info['brand_label']
         if matching_brand_label == brand_label:
             if matching_brand == brand:
-                if matching_series == series:   # 品牌集合、品牌、系列皆匹配
+                if matching_series == series and current_level < 3:   # 品牌集合、品牌、系列皆匹配
                     matching_result = {
                     'module' : pog_data.iloc[idx]['module_id'],
                     'layer' : pog_data.iloc[idx]['layer_id'],
@@ -246,7 +246,7 @@ def calculate_layer_space(module_id, layer_id, pog_data):
     
     return remaining_space
 
-def insert_item_to_target_layer(pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict):
+def insert_item_to_target_layer(pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org):
     """在目标层插入商品"""
     new_pog_data = pog_data.copy()
     
@@ -263,13 +263,11 @@ def insert_item_to_target_layer(pog_data, item_code, item_width, target_module, 
             return {'success': False, 'error_msg': result['error_msg']}
     
     # 计算当前剩余空间
-    # module_width = layer_items['module_width'].iloc[0]
-    # current_used_space = layer_items['item_width'].sum()
     current_remaining_space = calculate_layer_space(target_module, target_layer, pog_data)
     
     if current_remaining_space >= item_width:
         # 空间足够，直接插入并重排
-        result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict)
+        result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org)
         if result['success']:
             return {'success': True, 'new_pog_data': result['new_pog_data']}
         else:
@@ -316,7 +314,7 @@ def insert_and_rearrange(pog_data, item_code, item_width, target_module, target_
         brand_2_brand_label = pog_info_dict['brand_2_brand_label']
 
         sorted_layer_items = layer_items.sort_values(by = 'position', ascending = True)
-        position_result = locate_item_position(item_code, sorted_layer_items, item_attributes, item_attributes_detail, brand_2_brand_label)
+        position_result = locate_item_position(item_code, sorted_layer_items, item_attributes, item_attributes_detail, brand_2_brand_label, pog_config_org)
         matching_item_code = position_result['matching_item_code']
         new_pog_data.loc[len(new_pog_data)-1, 'position'] = (sorted_layer_items[sorted_layer_items['item_code'] == matching_item_code].iloc[0]['position'] - 0.5)      # 直接将新加入的商品插在前面（这里修改的列索引不知道为什么必须是len(new_pog_data)-1）
             
@@ -484,9 +482,12 @@ if __name__ == "__main__":
         # 'add_item': 101437322   # 匹配等级：brand_label
         # 'add_item': 101426154   # 匹配等级：brand
     }
+    with open('config.txt', 'r', encoding='utf-8') as file:
+        content = file.read()
+    pog_config_org = eval(content)
     
     # 执行函数
-    result = add_item_func(var_dict)
+    result = add_item_func(var_dict, pog_config_org)
     
     print(f"执行状态: {result['status']}")
     if result['status'] == 'success':
