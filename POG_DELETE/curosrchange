@@ -1,6 +1,6 @@
 import pandas as pd
 import math
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 
 
 class RemoveSKU:
@@ -8,7 +8,7 @@ class RemoveSKU:
     RemoveSKU 类
     ------------------
     全局删除 SKU（不再限定 module_id + layer_id），
-    如果商品在托盘(tray)上，则输出该托盘上的所有商品信息。
+    如果商品在托盘(tray)上，则阻止删除并返回该 SKU 所在的所有托盘（支持多对多映射）。
     返回 (new_pog, status_dict) 形式（与原流程兼容）。
     """
 
@@ -17,9 +17,9 @@ class RemoveSKU:
         self.affected_layers_by_removal: List[Tuple[int, int]] = []
         print("✅ RemoveSKU 初始化完成。")
 
-    def remove_sku_items(self, var_dict: Dict):
-        pog_data = var_dict['bases_data']['pog_data']
-        tray_item_data = var_dict['bases_data'].get('tray_item', None)
+    def remove_sku_items(self, var_dict: Dict[str, Any]):
+        pog_data: pd.DataFrame = var_dict['bases_data']['pog_data']
+        tray_item_data: Optional[pd.DataFrame] = var_dict['bases_data'].get('tray_item', None)
         params = var_dict['func'].get('del_item_func', {})
 
         delete_skus = params.get('del_item_list', [])
@@ -29,54 +29,63 @@ class RemoveSKU:
         if pog_data is None or pog_data.empty:
             return pog_data, {'status': 'fail', 'msg': 'POG数据为空'}
 
+        pog_data = pog_data.copy()
         pog_data['item_code'] = pog_data['item_code'].astype(str)
 
         # ==== tray-item 对应关系 ====
-        tray_items = []
-        tray_links = {}  # item_code -> tray_id
-        tray_to_items = {}  # tray_id -> list of item_codes (反向映射)
+        # 建立 item_code -> [tray_id, ...] 映射 (item_to_trays)
+        # 以及 tray_id -> [item_code, ...] 反向映射 (tray_to_items)
+        item_to_trays: Dict[str, List[str]] = {}
+        tray_to_items: Dict[str, List[str]] = {}
         if tray_item_data is not None and not tray_item_data.empty:
             try:
-                tray_pair_df = tray_item_data.iloc[:, [0, 1]].copy()
-                tray_pair_df.columns = ['tray_id', 'item_code']
-                tray_pair_df['tray_id'] = tray_pair_df['tray_id'].astype(str)
-                tray_pair_df['item_code'] = tray_pair_df['item_code'].astype(str)
-                tray_items = tray_pair_df['item_code'].tolist()
-                tray_links = dict(zip(tray_pair_df['item_code'], tray_pair_df['tray_id']))
-
-                # 构建反向映射：tray_id -> [item_code1, item_code2, ...]
-                for _, row in tray_pair_df.iterrows():
-                    tray_id = row['tray_id']
-                    item_code = row['item_code']
-                    if tray_id not in tray_to_items:
-                        tray_to_items[tray_id] = []
-                    tray_to_items[tray_id].append(item_code)
-
-                print(f"📦 托盘商品识别成功：共 {len(tray_items)} 个 tray-item 关联。")
+                pair = tray_item_data.iloc[:, [0, 1]].copy()
+                pair.columns = ['tray_id', 'item_code']
+                pair['tray_id'] = pair['tray_id'].astype(str)
+                pair['item_code'] = pair['item_code'].astype(str)
+                for _, r in pair.iterrows():
+                    tid = r['tray_id']
+                    it = r['item_code']
+                    item_to_trays.setdefault(it, []).append(tid)
+                    tray_to_items.setdefault(tid, []).append(it)
+                print(f"📦 载入 tray_item 映射，共 {len(pair)} 条记录，item->tray 映射项数 {len(item_to_trays)}。")
             except Exception as e:
-                print(f"⚠️ 读取 tray_item 文件出错: {e}")
+                print(f"⚠️ 处理 tray_item 文件出错：{e}")
+                item_to_trays = {}
+                tray_to_items = {}
+        else:
+            print("ℹ️ 未提供 tray_item 数据或文件为空，跳过 tray-item 映射检查。")
 
         # ==== 全局搜索要删除的商品 ====
-        found_rows = pog_data[pog_data['item_code'].isin(delete_skus)]
+        found_rows = pog_data[pog_data['item_code'].isin([str(x) for x in delete_skus])]
         if found_rows.empty:
             return pog_data, {
                 'status': 'fail',
                 'msg': f'未找到商品 {delete_skus}'
             }
 
-        # ==== 检查是否有商品在托盘上，如果有则收集该托盘上的所有商品信息 ====
-        tray_items_info = {}  # {tray_id: [item_code1, item_code2, ...]}
-        for code in delete_skus:
-            code_str = str(code)
-            if code_str in tray_items:
-                tray_id = tray_links.get(code_str)
-                if tray_id and tray_id in tray_to_items:
-                    # 找到该托盘上的所有商品
-                    items_on_tray = tray_to_items[tray_id]
-                    tray_items_info[tray_id] = items_on_tray
-                    print(f"📦 商品 {code_str} 位于托盘 {tray_id} 上，该托盘包含商品: {items_on_tray}")
+        # ==== 若任何要删 SKU 在 tray 上，阻止删除并返回该 SKU 的所有 tray 列表（item->trays），以及 tray->items 列表 ====
+        sku_on_trays = {}
+        for sku in delete_skus:
+            sku_str = str(sku)
+            if sku_str in item_to_trays:
+                sku_on_trays[sku_str] = item_to_trays[sku_str]
 
-        # ==== 禁止删除托盘自身 ====
+        if sku_on_trays:
+            # 构建友好 msg（列出每个 SKU 的 tray 列表）
+            parts = []
+            for sku, trays in sku_on_trays.items():
+                parts.append(f"SKU {sku} 位于托盘: {', '.join(trays)}")
+            msg = "删除失败：存在商品位于托盘上，详情如下： " + "；".join(parts) + "。请先处理托盘后重试。"
+            status = {
+                'status': 'fail',
+                'msg': msg,
+                'item_trays': sku_on_trays,   # item -> [tray_id]
+                'tray_items': tray_to_items   # tray_id -> [item_code, ...]
+            }
+            return pog_data, status
+
+        # ==== 禁止删除托盘自身（若 pog_data 中有 item_type 字段） ====
         if 'item_type' in pog_data.columns:
             tray_self = pog_data.loc[pog_data['item_type'] == 'tray', 'item_code'].astype(str).tolist()
             for code in delete_skus:
@@ -86,26 +95,19 @@ class RemoveSKU:
                         'msg': f'删除失败：SKU {code} 是托盘(tray)商品，禁止删除。'
                     }
 
-        # ==== 记录受影响层 ====
+        # ==== 记录受影响层（全局删除，因此多个层都可能受影响） ====
         affected_layers = found_rows[['module_id', 'layer_id']].drop_duplicates()
         self.affected_layers_by_removal = [tuple(x) for x in affected_layers.to_numpy()]
 
         # ==== 执行删除 ====
-        new_pog = pog_data.drop(found_rows.index)
+        new_pog = pog_data.drop(found_rows.index).reset_index(drop=True)
         removed_num = len(found_rows)
-        print(f"🗑️ 已删除 {removed_num} 条SKU记录。")
+        print(f"🗑️ 已删除 {removed_num} 条SKU记录（全局）。")
 
-        # ==== 构建返回信息 ====
         status_dict = {
             'status': 'success',
             'msg': f'成功删除 {removed_num} 个SKU'
         }
-
-        # 如果有商品在托盘上，将托盘商品信息添加到返回结果中
-        if tray_items_info:
-            status_dict['tray_items'] = tray_items_info
-            status_dict['msg'] += f'，发现 {len(tray_items_info)} 个托盘包含被删除商品'
-
         return new_pog, status_dict
 
 
@@ -114,9 +116,13 @@ class FillLayerSKU(RemoveSKU):
     FillLayerSKU 类
     ------------------
     删除SKU后：
-    1. 计算剩余空间
-    2. 使用 0-1 动态规划（Knapsack）在剩余宽度下选一组 SKU 的额外 facing（每个 SKU 最多 +1）以最大化 revenue
+    1. 计算受影响层剩余空间（基于 baseline）
+    2. 在每个受影响层使用 0-1 动态规划（Knapsack）选择额外 +1 facing 的 SKU 集合以最大化 revenue
+      （每个 SKU 最多 +1）
     3. 若无法增加任何 facing，则仅等距重排（含两端空隙）
+    4. 约束：每层最终展示单元数 <= 18（超过时按 revenue 优先保留）
+    5. spacing 与 position 向下取整为整数
+    6. 输出时会调整 facing 列，反映最终每个 base item 的 facing 数量
     """
 
     def __init__(self):
@@ -124,35 +130,57 @@ class FillLayerSKU(RemoveSKU):
         self.affected_layer_space: Optional[pd.DataFrame] = None
         self.sorted_items_by_position: Dict[Tuple[int, int], pd.DataFrame] = {}
         self.sales_df: Optional[pd.DataFrame] = None
-        # 背包基准宽度 — 按你之前约定用 995mm 作为上限基准（可修改）
-        self.dp_capacity_baseline = 995
+
+        self.max_items_per_layer = 18
         print("✅ FillLayerSKU 初始化完成。")
 
-    def analyze_layer_space(self, pog_data: pd.DataFrame, total_layer_width: int = None) -> pd.DataFrame:
-        # 如果未传 total_layer_width，则使用 baseline（以便保持一致）
-        if total_layer_width is None:
-            total_layer_width = self.dp_capacity_baseline
+    def analyze_layer_space(self, pog_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        自动从 pog_data 中读取 module_width（每层真实宽度）
+        不再使用固定的 dp_capacity_baseline=995
+        """
         if pog_data.empty:
             return pd.DataFrame(columns=['module_id', 'layer_id', 'item_count', 'used_width', 'remaining_width'])
+
+        # ① 每层真实宽度 = pog_data 中该层所有行的 module_width 的最大值
+        #   （因为同一层多行重复，直接 max 或 unique 都可）
+        layer_width = pog_data.groupby(['module_id', 'layer_id'])['module_width'].max().reset_index()
+        layer_width.rename(columns={'module_width': 'total_width'}, inplace=True)
+
+        # ② 计算每层物品宽度和数量
         layer_summary = pog_data.groupby(['module_id', 'layer_id']).agg(
             used_width=('item_width', 'sum'),
             item_count=('item_code', 'count')
         ).reset_index()
-        layer_summary['total_width'] = total_layer_width
-        layer_summary['remaining_width'] = layer_summary['total_width'] - layer_summary['used_width']
+
+        # ③ 合并
+        layer_summary = layer_summary.merge(layer_width, on=['module_id', 'layer_id'], how='left')
+
+        # ④ 计算剩余宽度
+        layer_summary['remaining_width'] = (layer_summary['total_width'] - layer_summary['used_width']).astype(int)
+
         return layer_summary
 
     def calculate_space_for_affected_layers(self, pog_data: pd.DataFrame, total_layer_width: int = None):
-        print("\n--- 计算受影响层剩余空间 ---")
-        if total_layer_width is None:
-            total_layer_width = self.dp_capacity_baseline
+        """
+        计算被删除商品后受影响层的剩余空间。
+        不再使用固定宽度，而是从 pog_data 中读取每层 module_width。
+        """
+        print("\n--- 计算受影响层剩余空间（自动读取 module_width） ---")
+
         if not self.affected_layers_by_removal:
             print("ℹ️ 无受影响层。")
             return
-        all_layers = self.analyze_layer_space(pog_data, total_layer_width)
-        affected = all_layers.set_index(['module_id', 'layer_id']).reindex(self.affected_layers_by_removal)
+
+        # ★ analyze_layer_space 不再需要 total_layer_width
+        all_layers = self.analyze_layer_space(pog_data)
+
+        # 筛选被影响层
+        affected = all_layers.set_index(['module_id', 'layer_id']) \
+            .reindex(self.affected_layers_by_removal)
+
         self.affected_layer_space = affected.reset_index()
-        print("✅ 受影响层空间计算完成。")
+        print("✅ 受影响层空间计算完成（已基于 module_width）。")
 
     def sort_items_by_position(self, pog_data: pd.DataFrame):
         print("\n--- 排序受影响层内商品 ---")
@@ -161,164 +189,206 @@ class FillLayerSKU(RemoveSKU):
             df = pog_data[(pog_data['module_id'] == mod_id) & (pog_data['layer_id'] == lay_id)].copy()
             if df.empty:
                 continue
-            sorted_df = df.sort_values(by='position')
-            self.sorted_items_by_position[(mod_id, lay_id)] = sorted_df
+            if 'position' in df.columns:
+                sorted_df = df.sort_values(by='position')
+            else:
+                sorted_df = df
+            self.sorted_items_by_position[(mod_id, lay_id)] = sorted_df.reset_index(drop=True)
         print("✅ 排序完成。")
 
     @staticmethod
-    def _knapsack_01(weights: List[int], values: List[float], capacity: int):
-        """
-        0-1 knapsack dynamic programming (returns indices selected)
-        weights: list of positive ints
-        values: list of floats (values)
-        capacity: int capacity
-        返回: set(selected indices)
-        """
+    def _knapsack_01(weights: List[int], values: List[float], capacity: int) -> set:
         n = len(weights)
         if n == 0 or capacity <= 0:
             return set()
-
-        # dp[w] = max value achievable with capacity w
         dp = [0.0] * (capacity + 1)
-        # keep choice info: for reconstruction, keep a 2D predecessor or use item-based backtracking table
-        # 为节省内存，用二维表记录是否选择 item i at capacity w
         choose = [[False] * (capacity + 1) for _ in range(n)]
-
         for i in range(n):
             wt = weights[i]
             val = values[i]
-            # traverse capacity descending for 0-1 knapsack
+            if wt <= 0:
+                continue
             for w in range(capacity, wt - 1, -1):
                 if dp[w - wt] + val > dp[w]:
                     dp[w] = dp[w - wt] + val
                     choose[i][w] = True
-
-        # reconstruct chosen indices
-        w = capacity
         chosen = set()
+        w = capacity
         for i in range(n - 1, -1, -1):
             if w >= 0 and choose[i][w]:
                 chosen.add(i)
                 w -= weights[i]
-
         return chosen
+
+    def _enforce_max_items(self, df_layer_items: pd.DataFrame) -> pd.DataFrame:
+        if len(df_layer_items) <= self.max_items_per_layer:
+            return df_layer_items
+        df = df_layer_items.copy().reset_index(drop=False)
+        if 'revenue' not in df.columns:
+            df['revenue'] = 0.0
+        df_sorted = df.sort_values(by=['revenue', 'index'], ascending=[False, True])
+        df_keep = df_sorted.head(self.max_items_per_layer).sort_values(by='index')
+        df_keep = df_keep.drop(columns=['index']).reset_index(drop=True)
+        return df_keep
 
     def fill_and_reposition_layers(self, pog_data: pd.DataFrame, total_layer_width: int = None):
         """
-        使用 0-1 DP 选出要增加的 facing（每个 SKU 最多 +1）。
-        重排时采用“两端留空”的等距分布（与原逻辑保持一致）。
+        填充与重新定位（基于每层真实 module_width）。
+        已做鲁棒性改进：模块/层 id 比较时按字符串，缺失宽度回退到 baseline，
+        spacing/position 向下取整（int）。
         """
-        if total_layer_width is None:
-            total_layer_width = self.dp_capacity_baseline
-
-        print("\n--- 开始执行 DP-based 填充与重新定位（0-1 Knapsack） ---")
+        # 如果外部还传了 total_layer_width 参数会被忽略 —— 我们优先使用每层的 module_width
+        print("\n--- 开始执行 DP-based 填充与重新定位（基于真实 module_width） ---")
         updated_layers = []
+
+        # 获取每层空间表（包含 total_width, remaining_width）
+        layer_space = self.analyze_layer_space(pog_data)
 
         for layer_key, layer_df in self.sorted_items_by_position.items():
             mod_id, lay_id = layer_key
             print(f"\n处理层：module {mod_id} - layer {lay_id}")
 
-            # 获取该层剩余宽度（基于 analyze_layer_space 的 baseline）
-            layer_space = self.analyze_layer_space(pog_data, total_layer_width)
-            remain_series = layer_space[
-                (layer_space['module_id'] == mod_id) &
-                (layer_space['layer_id'] == lay_id)
-                ]['remaining_width']
-            if remain_series.empty:
-                print(f"⚠️ 无法读取层 {mod_id}-{lay_id} 的剩余宽度，跳过。")
-                continue
-            remaining_width = int(max(0, int(remain_series.iloc[0])))  # 转为整数毫米
-            print(f"剩余宽度（capacity）: {remaining_width} mm")
+            # 以字符串方式匹配，避免 int/str 类型差异导致无法找到行
+            row = layer_space[
+                (layer_space['module_id'].astype(str) == str(mod_id)) &
+                (layer_space['layer_id'].astype(str) == str(lay_id))
+                ]
 
-            # 仅考虑非 tray items 作为 candidate（且必须在该层存在）
+            if row.empty:
+                print(f"⚠️ 找不到层 {mod_id}-{lay_id} 的 module_width/剩余宽度信息，跳过该层。")
+                continue
+
+            # 读取 total_width 与 remaining_width，必要时回退到 baseline
+            # 确保 numeric 并转换为 int
+            try:
+                total_layer_width_val = row['total_width'].iloc[0]
+                total_layer_width = int(total_layer_width_val) if pd.notna(total_layer_width_val) else None
+            except Exception:
+                total_layer_width = None
+
+            try:
+                remaining_width_val = row['remaining_width'].iloc[0]
+                remaining_width = int(remaining_width_val) if pd.notna(remaining_width_val) else None
+            except Exception:
+                remaining_width = None
+
+            # 回退策略
+            baseline = getattr(self, 'dp_capacity_baseline', 995)
+            if total_layer_width is None:
+                total_layer_width = int(baseline)
+                print(f"⚠️ total_width 缺失，回退到 baseline = {total_layer_width} mm")
+            if remaining_width is None:
+                # 若剩余宽度缺失，用 total - used_width 计算（若能），否则设为 0
+                used_w = row.get('used_width', None)
+                if used_w is not None and len(used_w) > 0 and pd.notna(used_w.iloc[0]):
+                    try:
+                        remaining_width = int(max(0, int(total_layer_width) - int(used_w.iloc[0])))
+                    except Exception:
+                        remaining_width = 0
+                else:
+                    remaining_width = 0
+                print(f"⚠️ remaining_width 缺失，回退为 {remaining_width} mm")
+
+            print(f"该层实际宽度 module_width = {total_layer_width} mm，剩余宽度 = {remaining_width} mm")
+
+            # candidates：排除 tray
             candidates_df = layer_df.copy()
             if 'item_type' in candidates_df.columns:
                 candidates_df = candidates_df[candidates_df['item_type'] != 'tray'].copy()
+
+            # 如果没有候选项，直接等距重排整层（spacing 向下取整）
             if candidates_df.empty:
-                print("无候选商品（非tray），跳过该层。")
-                # 仍需重排以保证间距一致 -> 但若无变化可直接跳过
+                new_items = [r.to_dict() for _, r in layer_df.iterrows()]
+                total_width_calc = sum(int(i.get('item_width', 0)) for i in new_items)
+                num = len(new_items)
+                spacing = math.floor((total_layer_width - total_width_calc) / (num + 1)) if num > 0 else 0
+                pos = spacing
+                for item in new_items:
+                    item['position'] = int(pos)
+                    pos += int(item.get('item_width', 0)) + spacing
+                updated_layers.append(pd.DataFrame(new_items))
                 continue
 
-            # 计算 revenue = sales * qty（sales_df 已在 run_delete_fill_pipeline 里预处理）
-            # 将 revenue 合并进候选
+            # 计算 revenue 并准备 weights/values
             cand = candidates_df.copy()
+            cand['item_code'] = cand['item_code'].astype(str)
             if self.sales_df is not None:
-                # sales_df 已包含 item_code (str) 与 revenue 字段
                 cand = cand.merge(self.sales_df[['item_code', 'revenue']], on='item_code', how='left')
                 cand['revenue'] = cand['revenue'].fillna(0.0)
             else:
                 cand['revenue'] = 0.0
 
-            # weights / values for DP
-            weights: List[int] = cand['item_width'].astype(int).tolist()
-            values: List[float] = cand['revenue'].astype(float).tolist()
+            weights = cand['item_width'].astype(int).tolist()
+            values = cand['revenue'].astype(float).tolist()
 
-            # filter out items whose width > remaining_width (they can't be added)
             feasible_idx = [i for i, w in enumerate(weights) if w <= remaining_width and w > 0]
             if not feasible_idx:
-                print("没有宽度可放下的候选商品，执行等距重排。")
-                # 按照原逻辑做等距重排（无新增 facing）
-                new_items = []
-                for _, row in layer_df.iterrows():
-                    new_items.append(row.to_dict())
-                total_width = sum(i['item_width'] for i in new_items)
-                spacing = math.floor((total_layer_width - total_width) / (len(new_items) + 1)) if len(
-                    new_items) > 0 else 0
+                # 等距重排（无法新增 facing）
+                new_items = [r.to_dict() for _, r in layer_df.iterrows()]
+                total_width_calc = sum(int(i.get('item_width', 0)) for i in new_items)
+                num = len(new_items)
+                spacing = math.floor((total_layer_width - total_width_calc) / (num + 1)) if num > 0 else 0
                 pos = spacing
                 for item in new_items:
-                    item['position'] = pos
-                    pos += item['item_width'] + spacing
+                    item['position'] = int(pos)
+                    pos += int(item.get('item_width', 0)) + spacing
                 updated_layers.append(pd.DataFrame(new_items))
                 continue
 
-            # prepare arrays limited to candidates
             cand_weights = [weights[i] for i in feasible_idx]
             cand_values = [values[i] for i in feasible_idx]
 
-            # run knapsack (capacity = remaining_width)
-            chosen_indices_local = self._knapsack_01(cand_weights, cand_values, remaining_width)
+            chosen_local = self._knapsack_01(cand_weights, cand_values, remaining_width)
+            chosen_global_idx = [feasible_idx[i] for i in chosen_local]
 
-            # map back to original candidate indices
-            chosen_global_idx = [feasible_idx[i] for i in chosen_indices_local]
-
-            picked_codes = set()
-            for idx in chosen_global_idx:
-                picked_codes.add(str(cand.iloc[idx]['item_code']))
+            picked_codes = {str(cand.iloc[idx]['item_code']) for idx in chosen_global_idx}
 
             if picked_codes:
                 total_gain = sum(float(cand.iloc[idx]['revenue']) for idx in chosen_global_idx)
                 print(f"DP 选择的 SKU 集合: {picked_codes}，预计额外 revenue: {total_gain:.3f}")
             else:
-                print("DP 未选择任何额外 facing（或收益为0），进行等距重排。")
+                print("DP 未选择任何额外 facing（或收益为0），将等距重排。")
 
-            # 构建新层数据（原件 + 复制品）
+            # 生成新层行（带 double 标记的 item_code）
             new_items = []
-            # we iterate original layer_df order (sorted by position)
-            for _, row in layer_df.iterrows():
-                base_item = row.to_dict()
+            for _, row_item in layer_df.iterrows():
+                base_item = row_item.to_dict()
                 code = str(base_item['item_code'])
-                # 如果被选中double，就生成两个并加标号
+                base_item['item_width'] = int(base_item.get('item_width', 0))
+                revenue_val = 0.0
+                if self.sales_df is not None:
+                    r = self.sales_df.loc[self.sales_df['item_code'] == code]
+                    if not r.empty:
+                        revenue_val = float(r['revenue'].iloc[0])
+                base_item['revenue'] = revenue_val
+
                 if code in picked_codes:
-                    item1 = base_item.copy()
-                    item2 = base_item.copy()
-                    item1['item_code'] = f"{code}(1)"
-                    item2['item_code'] = f"{code}(2)"
-                    new_items.extend([item1, item2])
+                    i1 = base_item.copy();
+                    i2 = base_item.copy()
+                    i1['item_code'] = f"{code}(1)";
+                    i2['item_code'] = f"{code}(2)"
+                    new_items.extend([i1, i2])
                 else:
                     new_items.append(base_item)
 
-            # 计算等距位置（两端空）
-            total_width = sum(i['item_width'] for i in new_items)
-            num_items = len(new_items)
-            spacing = math.floor((total_layer_width - total_width) / (num_items + 1)) if num_items > 0 else 0
+            df_new = pd.DataFrame(new_items)
+            df_new = self._enforce_max_items(df_new)
+
+            # 等距重排（使用真实 total_layer_width），spacing/position 向下取整为 int
+            total_width_calc = int(df_new['item_width'].astype(int).sum()) if not df_new.empty else 0
+            num_items = len(df_new)
+            spacing = math.floor((total_layer_width - total_width_calc) / (num_items + 1)) if num_items > 0 else 0
             pos = spacing
-            for item in new_items:
-                item['position'] = pos
-                pos += item['item_width'] + spacing
+            positions = []
+            for idx in range(num_items):
+                positions.append(int(pos))
+                pos += int(df_new.iloc[idx]['item_width']) + spacing
+            df_new = df_new.reset_index(drop=True)
+            df_new['position'] = positions
 
-            updated_layers.append(pd.DataFrame(new_items))
+            updated_layers.append(df_new)
 
-        # 合并更新层与未受影响层
+        # 合并并计算 facing
         if not updated_layers:
             return pog_data, {'status': 'success', 'msg': '无可更新层'}
 
@@ -327,23 +397,32 @@ class FillLayerSKU(RemoveSKU):
             index=pd.MultiIndex.from_tuples(self.affected_layers_by_removal, names=['module_id', 'layer_id']),
             errors='ignore'
         ).reset_index()
+
         new_pog = pd.concat([unaffected, new_layers], ignore_index=True)
 
-        print("✅ DP-based 填充与重新定位完成。")
+        def base_code(ic: str) -> str:
+            if isinstance(ic, str) and '(' in ic and ic.endswith(')'):
+                return ic.split('(')[0]
+            return ic
+
+        new_pog = new_pog.reset_index(drop=True)
+        new_pog['base_item_code'] = new_pog['item_code'].astype(str).apply(base_code)
+        facing_counts = new_pog['base_item_code'].value_counts().to_dict()
+        new_pog['facing'] = new_pog['base_item_code'].map(lambda x: int(facing_counts.get(x, 0)))
+        new_pog.drop(columns=['base_item_code'], inplace=True)
+
+        print("✅ DP-based 填充与重新定位完成（基于 module_width）。")
         return new_pog, {'status': 'success', 'msg': '填充与重新定位成功'}
 
-    def run_delete_fill_pipeline(self, var_dict: Dict) -> Tuple[pd.DataFrame, Dict]:
-        # 统一 item_code 为 str
+    def run_delete_fill_pipeline(self, var_dict: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         pog_data = var_dict['bases_data']['pog_data']
         pog_data = pog_data.copy()
         pog_data['item_code'] = pog_data['item_code'].astype(str)
         var_dict['bases_data']['pog_data'] = pog_data
 
-        # load sales and compute revenue = sales * qty (if provided)
         sales_df = var_dict['bases_data'].get('sales_item_sum', None)
         if sales_df is not None and not sales_df.empty:
             sales_df = sales_df.copy()
-            # ensure columns
             if 'item_code' in sales_df.columns and 'sales' in sales_df.columns and 'qty' in sales_df.columns:
                 sales_df['item_code'] = sales_df['item_code'].astype(str)
                 sales_df['revenue'] = sales_df['sales'].astype(float) * sales_df['qty'].astype(float)
@@ -356,22 +435,19 @@ class FillLayerSKU(RemoveSKU):
             print("ℹ️ 未提供 sales_item_sum，double 选择默认 revenue=0。")
             self.sales_df = None
 
-        # step1: 删除（限定层）
         new_pog, status = self.remove_sku_items(var_dict)
         if status.get('status') == 'fail':
             return new_pog, status
 
-        # step2: 计算受影响层空间并排序
         self.calculate_space_for_affected_layers(new_pog)
         self.sort_items_by_position(new_pog)
 
-        # step3: 使用 DP 进行填充与重排
         final_pog, status2 = self.fill_and_reposition_layers(new_pog)
         return final_pog, status2
 
 
 # ===========================
-# ✅ 示例调用
+# 示例调用（请按你本地路径修改）
 # ===========================
 if __name__ == "__main__":
     pog_file = r"C:\Users\fy\Desktop\POG\新的\开发所需测试数据\开发所需测试数据\pog_result.csv"
@@ -386,9 +462,7 @@ if __name__ == "__main__":
         },
         'func': {
             'del_item_func': {
-                'del_item_list': ['101425031'],
-                'target_module_id': 6,
-                'target_layer_id': 2
+                'del_item_list': ['101432325']
             }
         }
     }
@@ -402,4 +476,9 @@ if __name__ == "__main__":
         new_pog.to_csv(output_file, index=False, encoding='utf-8-sig')
         print(f"✅ 最终结果已导出至: {output_file}")
     else:
-        print("❌ 操作失败：", status.get('msg', '未知错误'))
+        # 若是因为 SKU 在 tray 上被阻止删除，status 会包含 'item_trays' 和 'tray_items'
+        if status.get('item_trays') or status.get('tray_items'):
+            print("⚠️ 部分或全部 SKU 位于托盘上，已阻止删除。详见 status['item_trays'] 与 status['tray_items']")
+            print(status.get('msg'))
+        else:
+            print("❌ 操作失败：", status.get('msg', '未知错误'))
