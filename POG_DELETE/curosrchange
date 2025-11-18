@@ -462,7 +462,7 @@ if __name__ == "__main__":
         },
         'func': {
             'del_item_func': {
-                'del_item_list': ['101432325']
+                'del_item_list': ['101412643','101412641']
             }
         }
     }
