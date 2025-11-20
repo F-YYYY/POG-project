@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import visualizing
 import matplotlib.pyplot as plt
+plt.rcParams['font.family'] = 'SimHei'
 
 def add_item_func(var_dict, pog_config_org):
     """
@@ -56,16 +57,16 @@ def add_item_func(var_dict, pog_config_org):
     matching_level = position_result['matching_level']
     add_item_width = adding_item_info['width']
 
-    # 对目标层进行可视化
+    # 对原始状态的目标层进行可视化
     layer_mask = (pog_data['module_id'] == target_module) & (pog_data['layer_id'] == target_layer)
     layer_items = pog_data[layer_mask]
-    for idx in layer_items.index:
+    for idx in layer_items.index:       # 为layer_items这个dataframe添加字段segment_rank
         item_code = layer_items.loc[idx]['item_code']
         item_row_detail = item_attributes_detail[item_attributes_detail['item_idnt'] == int(item_code)]
         segment = item_row_detail.iloc[0]['category_name']
         segment_rank = int(segment_rank_rule[segment])
         layer_items.loc[idx, 'segment_rank'] = segment_rank
-    fig1 = visualizing.pog_visualize(pog_data, item_attributes_detail, target_module, target_layer, pog_config_org)
+    fig1 = visualizing.pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, target_module, target_layer, pog_config_org)
 
     
     # Step3：尝试在目标层插入商品
@@ -80,6 +81,18 @@ def add_item_func(var_dict, pog_config_org):
     )
     
     if insert_result['success']:
+        # 对修改后的目标层进行可视化
+        new_pog_data = insert_result['new_pog_data']
+        layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
+        layer_items = new_pog_data[layer_mask]
+        for idx in layer_items.index:       # 为layer_items这个dataframe添加字段segment_rank
+            item_code = layer_items.loc[idx]['item_code']
+            item_row_detail = item_attributes_detail[item_attributes_detail['item_idnt'] == int(item_code)]
+            segment = item_row_detail.iloc[0]['category_name']
+            segment_rank = int(segment_rank_rule[segment])
+            layer_items.loc[idx, 'segment_rank'] = segment_rank
+        fig2 = visualizing.pog_layer_visualize(new_pog_data, item_attributes, item_attributes_detail, target_module, target_layer, pog_config_org)
+
         return {
             'pog_data': insert_result['new_pog_data'],
             'status': 'success',
@@ -319,7 +332,7 @@ def insert_item_to_target_layer(pog_data, item_code, item_width, target_module, 
             return {'success': False, 'error_msg': result['error_msg']}
     else:
         # 空间不足，尝试调整策略
-        return adjust_space_for_insertion(new_pog_data, item_code, item_width, target_module, target_layer, pog_info_dict['sales_data'])
+        return adjust_space_for_insertion(new_pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org)
 
 def add_item_to_empty_layer(pog_data, item_code, item_width, target_module, target_layer):
     """向空层添加商品"""
@@ -429,7 +442,7 @@ def rearrange_layer_item_gap(pog_data, target_module, target_layer):
     
     return new_pog_data
 
-def adjust_space_for_insertion(pog_data, item_code, item_width, target_module, target_layer, sales_data):
+def adjust_space_for_insertion(pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org):
     """调整空间策略：减少facing或删除商品"""
     new_pog_data = pog_data.copy()
     layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
@@ -439,7 +452,7 @@ def adjust_space_for_insertion(pog_data, item_code, item_width, target_module, t
     
     if not double_facing_items.empty:
         # 获取销售数据并排序（从低到高）
-        sorted_items = get_sorted_items_by_sales(double_facing_items, sales_data, ascending=True)
+        sorted_items = get_sorted_items_by_sales(double_facing_items, pog_info_dict['sales_data'], ascending=True)
         
         for idx in sorted_items.index:
             # 减少一个facing
@@ -454,37 +467,37 @@ def adjust_space_for_insertion(pog_data, item_code, item_width, target_module, t
             
             if remaining_space_after >= item_width:
                 # 空间足够，插入商品
-                result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer) # TODO：函数有变，待改
+                result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org)
                 if result['success']:
                     return {'success': True, 'new_pog_data': result['new_pog_data']}
             
             # 如果还是不够，恢复原状继续尝试下一个
             new_pog_data.loc[idx, 'facing'] = original_facing
     
-    # 策略2: 删除销售最低的商品
-    layer_items = new_pog_data[layer_mask]
-    if len(layer_items) > 1:
-        # 获取销售数据并排序（从低到高）
-        sorted_items = get_sorted_items_by_sales(layer_items, sales_data, ascending=True)
+    # # 策略2: 删除销售最低的商品
+    # layer_items = new_pog_data[layer_mask]
+    # if len(layer_items) > 1:
+    #     # 获取销售数据并排序（从低到高）
+    #     sorted_items = get_sorted_items_by_sales(layer_items, sales_data, ascending=True)
         
-        for idx in sorted_items.index:
-            # 删除一个商品
-            temp_pog_data = new_pog_data.drop(index=idx)
+    #     for idx in sorted_items.index:
+    #         # 删除一个商品
+    #         temp_pog_data = new_pog_data.drop(index=idx)
             
-            # 检查空间是否足够
-            temp_layer_items = temp_pog_data[
-                (temp_pog_data['module_id'] == target_module) & 
-                (temp_pog_data['layer_id'] == target_layer)
-            ]
-            module_width = temp_layer_items['module_width'].iloc[0]
-            used_space_after = temp_layer_items['item_width'].sum()
-            remaining_space_after = module_width - used_space_after
+    #         # 检查空间是否足够
+    #         temp_layer_items = temp_pog_data[
+    #             (temp_pog_data['module_id'] == target_module) & 
+    #             (temp_pog_data['layer_id'] == target_layer)
+    #         ]
+    #         module_width = temp_layer_items['module_width'].iloc[0]
+    #         used_space_after = temp_layer_items['item_width'].sum()
+    #         remaining_space_after = module_width - used_space_after
             
-            if remaining_space_after >= item_width:
-                # 空间足够，插入商品
-                result = insert_and_rearrange(temp_pog_data, item_code, item_width, target_module, target_layer)    # TODO：函数有变，待改
-                if result['success']:
-                    return {'success': True, 'new_pog_data': result['new_pog_data']}
+    #         if remaining_space_after >= item_width:
+    #             # 空间足够，插入商品
+    #             result = insert_and_rearrange(temp_pog_data, item_code, item_width, target_module, target_layer)    # TODO：函数有变，待改
+    #             if result['success']:
+    #                 return {'success': True, 'new_pog_data': result['new_pog_data']}
     
     # 所有策略都失败
     return {
@@ -502,11 +515,10 @@ def get_sorted_items_by_sales(items_df, sales_data, ascending=True):
         how='left'
     )
     
-    # 填充缺失的销售数据
-    merged_df['sales'] = merged_df['sales'].fillna(0)
-    
+    merged_df['sales'] = merged_df['sales'].fillna(0)   # 填充缺失的销售数据
+    merged_df['sales_total'] = merged_df['sales'] * merged_df['qty']
     # 按销售排序
-    return merged_df.sort_values('sales', ascending=ascending)
+    return merged_df.sort_values('sales_total', ascending=ascending)
 
 # 使用示例
 if __name__ == "__main__":
@@ -528,7 +540,8 @@ if __name__ == "__main__":
             'brand_2_brand_label': brand_2_brand_label,
             'sales_data': sales_item_sum
         },
-        'add_item': 100006545  # 匹配等级：series
+        'add_item': 100020975   # 匹配等级：same_item
+        # 'add_item': 100006545  # 匹配等级：series
         # 'add_item': 101437322   # 匹配等级：brand_label
         # 'add_item': 101426154   # 匹配等级：brand
     }
@@ -540,7 +553,7 @@ if __name__ == "__main__":
     
     # 执行函数
     result = add_item_func(var_dict, pog_config_org)
-
+    plt.show()
     
     print(f"执行状态: {result['status']}")
     if result['status'] == 'success':

@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import pandas as pd
 import numpy as np
+plt.rcParams['font.family'] = 'SimHei'
 
 def plot_layer_arrangement(shelf_width, layer_items_df):
     """
@@ -154,18 +155,18 @@ def plot_layer_arrangement_rec(shelf_width, layer_items_df):
         text_x = row['position'] + total_width / 2
         text_y = y_position + rect_height/2 + 0.05
         
-        label = f"{row['item_code']} (segment_rank:{row['segment_rank']})"
-        if row['facing'] > 1:
-            label += f" ×{row['facing']}"
+        label = f"{row['brand']}\n{row['series']}\nrk:{row['segment_rank']}"
+        # if row['facing'] > 1:
+        #     label += f" ×{row['facing']}"
             
         ax.text(text_x, text_y, label, 
                 ha='center', va='bottom', fontsize=10,
                 bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.9))
     
     # 设置图形属性
-    ax.set_xlabel('位置 (毫米)', fontsize=12)
+    ax.set_xlabel('position', fontsize=12)
     ax.set_ylabel('', fontsize=12)
-    ax.set_title('货架陈列布局图（增强版）', fontsize=14, fontweight='bold')
+    ax.set_title(f'layer_arrangement', fontsize=14, fontweight='bold')
     
     # 设置坐标轴范围
     ax.set_xlim(-50, shelf_width + 50)
@@ -175,47 +176,66 @@ def plot_layer_arrangement_rec(shelf_width, layer_items_df):
     handles = [
         patches.Patch(color='red', alpha=0.7, label='facing ≥ 2'),
         patches.Patch(color='blue', alpha=0.5, label='facing = 1'),
-        plt.Line2D([0], [0], color='gray', linestyle='--', label='货架边界')
+        plt.Line2D([0], [0], color='gray', linestyle='--', label='boundary')
     ]
     ax.legend(handles=handles, loc='upper right')
     
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     
-    return fig
+    return fig, ax
 
-def pog_visualize(pog_data, item_attributes_detail, target_module, target_layer, pog_config_org, option = 'rec'):
+# 可视化接口：输入三个数据文件、要可视化的module和layer编号、config文件
+def pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, target_module, target_layer, pog_config_org, option = 'rec'):
     layer_mask = (pog_data['module_id'] == target_module) & (pog_data['layer_id'] == target_layer)
     layer_items = pog_data[layer_mask]
     for idx in layer_items.index:
         item_code = layer_items.loc[idx]['item_code']
+        if item_code < 100000:
+            print('error：该层有托盘，暂时无法可视化')
+            return None
+        
+        item_row = item_attributes[item_attributes['ITEM_NBR'] == int(item_code)]
         item_row_detail = item_attributes_detail[item_attributes_detail['item_idnt'] == int(item_code)]
+
+        series = item_row.iloc[0]['SERIES']
+        brand = item_row_detail.iloc[0]['brandname_cn']
         segment = item_row_detail.iloc[0]['category_name']
         segment_rank_rule = pog_config_org['segment']['assign_brand_rank']
-        segment_rank = int(segment_rank_rule[segment])
-        layer_items.loc[idx, 'segment_rank'] = segment_rank
+        segment_rank = segment_rank_rule[segment]
+        layer_items.loc[idx, 'series'] = series
+        layer_items.loc[idx, 'brand'] = brand
+        layer_items.loc[idx, 'segment_rank'] = int(segment_rank)
     if option == 'rec':
-        fig = plot_layer_arrangement_rec(pog_config_org['global']['module_meter'][target_module - 1], layer_items)
+        fig, ax = plot_layer_arrangement_rec(pog_config_org['global']['module_meter'][target_module - 1], layer_items)
     elif option == 'line':
-        fig = plot_layer_arrangement(pog_config_org['global']['module_meter'][target_module - 1], layer_items)
+        fig, ax = plot_layer_arrangement(pog_config_org['global']['module_meter'][target_module - 1], layer_items)
+    ax.set_title(f'layer_arrangement(module={target_module},layer={target_layer})', fontsize=14, fontweight='bold')
     return fig
 
 # 测试代码
 if __name__ == "__main__":
-    # 创建示例数据
-    data = {
-        'item_code': ['A001', 'B002', 'C003', 'D004', 'E005'],
-        'position': [0, 200, 500, 800, 1200],
-        'item_width': [100, 80, 120, 150, 90],
-        'facing': [1, 3, 2, 1, 4],
-        'segment_rank': [1, 2, 1, 3, 2]
-    }
+    # # 创建示例数据
+    # data = {
+    #     'item_code': ['A001', 'B002', 'C003', 'D004', 'E005'],
+    #     'position': [0, 200, 500, 800, 1200],
+    #     'item_width': [100, 80, 120, 150, 90],
+    #     'facing': [1, 3, 2, 1, 4],
+    #     'segment_rank': [1, 2, 1, 3, 2]
+    # }
     
-    df = pd.DataFrame(data)
-    shelf_width = 1800  # 毫米
+    # df = pd.DataFrame(data)
+    # shelf_width = 1800  # 毫米
     
-    # 绘制两种版本的图形
-    fig1 = plot_layer_arrangement(shelf_width, df)
-    fig2 = plot_layer_arrangement_rec(shelf_width, df)
+    # # 绘制两种版本的图形
+    # # fig1 = plot_layer_arrangement(shelf_width, df)
+    # fig2 = plot_layer_arrangement_rec(shelf_width, df)
+    pog_data = pd.read_csv('pog_result.csv')
+    item_attributes = pd.read_csv('pog_test_haircare_test.csv')
+    item_attributes_detail = pd.read_csv('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
+    with open('config.txt', 'r', encoding='utf-8') as file:
+        content = file.read()
+    pog_config_org = eval(content)
+    pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, 2, 5, pog_config_org)
     
     plt.show()
