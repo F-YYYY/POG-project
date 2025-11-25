@@ -36,11 +36,17 @@ def add_item_func(var_dict, pog_config_org):
             'status': 'fail',
             'error_msg': f'未找到商品标号 {adding_item_code}相应的商品信息 '
         }
-    if is_tray_item(adding_item_code):
+    if is_tray(adding_item_code):
         return {
             'pog_data': pog_data,
             'status': 'fail',
-            'error_msg': f'新增的商品 {adding_item_code} 是托盘商品，不能在商品区域陈列'
+            'error_msg': f'非法操作：新增的商品 {adding_item_code} 是托盘'
+        }
+    if is_tray_item(adding_item_code, tray_item):
+        return {
+            'pog_data': pog_data,
+            'status': 'fail',
+            'error_msg': f'非法操作：新增的商品 {adding_item_code} 是托盘商品'
         }
     
     # Step2：定位商品位置
@@ -114,13 +120,19 @@ def add_item_func(var_dict, pog_config_org):
     #         'error_msg': f'函数执行出错: {str(e)}'
     #     }
 
-def is_tray_item(item_code):
-    """检查商品是否为托盘商品且不能在商品区域陈列"""
+def is_tray(item_code):
+    """检查商品是否为托盘"""
     if int(item_code) < 1000000:
         return True
     else:
         return False
     # TODO：这里先用最简单的实现方法，具体逻辑有待确认和推敲
+
+def is_tray_item(item_code, tray_item):
+    if tray_item['item_code'].isin([str(item_code)]).any():
+        return True
+    else:
+        return False
 
 def locate_item_position(item_code, pog_data, item_attributes, item_attributes_detail, brand_2_brand_label , pog_config_org = None, option = None):
     """
@@ -153,7 +165,7 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
     for idx in range(0, len(pog_data)):
         matching_item_code = pog_data.iloc[idx]['item_code']
         # 若为托盘商品，暂时直接跳过
-        if is_tray_item(matching_item_code):
+        if is_tray(matching_item_code):
             continue
         # 若当前pog布局中正好有正在添加的item，直接返回
         if matching_item_code == item_code:
@@ -237,7 +249,7 @@ def locate_item_position(item_code, pog_data, item_attributes, item_attributes_d
     matching_index = matching_result['matching_index']
     for idx in range(matching_index , len(pog_data)):
         matching_item_code = pog_data.iloc[idx]['item_code']
-        if is_tray_item(matching_item_code):
+        if is_tray(matching_item_code):
             continue
         matching_item_info = get_item_info(matching_item_code, item_attributes, item_attributes_detail, brand_2_brand_label)
         matching_level_name = matching_item_info.get(matching_level)
@@ -524,7 +536,7 @@ def get_sorted_items_by_sales(items_df, sales_data, ascending=True):
 if __name__ == "__main__":
     # 数据加载
     pog_result = pd.read_csv('pog_result.csv')
-    pog_test_haircare_tray = pd.read_csv('pog_test_haircare_tray.csv')
+    pog_test_haircare_tray_item = pd.read_csv('pog_test_haircare_tray_item.csv')
     pog_test_haircare_test = pd.read_csv('pog_test_haircare_test.csv')
     ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V = pd.read_csv('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
     brand_2_brand_label = pd.read_csv('brand_2_brand_label.csv')
@@ -534,13 +546,14 @@ if __name__ == "__main__":
     var_dict = {
         'bases_data': {
             'pog_data': pog_result,
-            'tray_item': pog_test_haircare_tray,
+            'tray_item': pog_test_haircare_tray_item,
             'item_attributes': pog_test_haircare_test,
             'item_attributes_detail': ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V,
             'brand_2_brand_label': brand_2_brand_label,
             'sales_data': sales_item_sum
         },
-        'add_item': 100020975   # 匹配等级：same_item
+        'add_item': 101448023   # 托盘商品，理应报错
+        # 'add_item': 100020975   # 匹配等级：same_item
         # 'add_item': 100006545  # 匹配等级：series
         # 'add_item': 101437322   # 匹配等级：brand_label
         # 'add_item': 101426154   # 匹配等级：brand

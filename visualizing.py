@@ -155,7 +155,7 @@ def plot_layer_arrangement_rec(shelf_width, layer_items_df):
         text_x = row['position'] + total_width / 2
         text_y = y_position + rect_height/2 + 0.05
         
-        label = f"{row['brand']}\n{row['series']}\nrk:{row['segment_rank']}"
+        label = f"{row['brand']}\n{row['series']}\nrk:{int(row['segment_rank'])}"
         # if row['facing'] > 1:
         #     label += f" ×{row['facing']}"
             
@@ -236,6 +236,6 @@ if __name__ == "__main__":
     with open('config.txt', 'r', encoding='utf-8') as file:
         content = file.read()
     pog_config_org = eval(content)
-    pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, 2, 5, pog_config_org)
+    pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, 2, 4, pog_config_org)
     
     plt.show()
