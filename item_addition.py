@@ -72,7 +72,7 @@ def add_item_func(var_dict, pog_config_org):
         segment = item_row_detail.iloc[0]['category_name']
         segment_rank = int(segment_rank_rule[segment])
         layer_items.loc[idx, 'segment_rank'] = segment_rank
-    fig1 = visualizing.pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, target_module, target_layer, pog_config_org)
+    fig1 = visualizing.pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, brand_2_brand_label, target_module, target_layer, pog_config_org)
 
     
     # Step3：尝试在目标层插入商品
@@ -97,12 +97,12 @@ def add_item_func(var_dict, pog_config_org):
             segment = item_row_detail.iloc[0]['category_name']
             segment_rank = int(segment_rank_rule[segment])
             layer_items.loc[idx, 'segment_rank'] = segment_rank
-        fig2 = visualizing.pog_layer_visualize(new_pog_data, item_attributes, item_attributes_detail, target_module, target_layer, pog_config_org)
+        fig2 = visualizing.pog_layer_visualize(new_pog_data, item_attributes, item_attributes_detail, brand_2_brand_label, target_module, target_layer, pog_config_org)
 
         return {
             'pog_data': insert_result['new_pog_data'],
             'status': 'success',
-            'error_msg': '',
+            'adjust_msg': insert_result['adjust_msg'],
             'target_module': target_module,
             'target_layer': target_layer
         }
@@ -279,8 +279,8 @@ def get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_br
     # 从商品属性表获取基本信息
     item_row = item_attributes[item_attributes['ITEM_NBR'] == int(item_code)]
     item_row_detail = item_attributes_detail[item_attributes_detail['item_idnt'] == int(item_code)]
-    brand_name = item_row_detail.iloc[0]['brandname_cn']
-    brand_row = brand_2_brand_label[brand_2_brand_label['brand'] == brand_name]
+    brand = item_row_detail.iloc[0]['brandname_cn']
+    brand_row = brand_2_brand_label[brand_2_brand_label['brand'] == brand]
     
     if item_row.empty or item_row_detail.empty or brand_row.empty:     # 暂时只考虑添加在三个表中都有信息的商品
         return None
@@ -291,7 +291,7 @@ def get_item_info(item_code, item_attributes, item_attributes_detail, brand_2_br
         'width': item_row_detail.iloc[0]['item_breadth'] * 10, # ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv表使用的单位为cm，需要换算
         'segment' : item_row_detail.iloc[0]['category_name'],
         'series': item_row.iloc[0]['SERIES'],
-        'brand' : brand_name,
+        'brand' : brand,
         'brand_label' : brand_row.iloc[0]['brand_label']
     }
 
@@ -339,7 +339,7 @@ def insert_item_to_target_layer(pog_data, item_code, item_width, target_module, 
         # 空间足够，直接插入并重排
         result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org)
         if result['success']:
-            return {'success': True, 'new_pog_data': result['new_pog_data']}
+            return {'success': True, 'new_pog_data': result['new_pog_data'], 'adjust_msg': None}
         else:
             return {'success': False, 'error_msg': result['error_msg']}
     else:
@@ -388,9 +388,9 @@ def insert_and_rearrange(pog_data, item_code, item_width, target_module, target_
         if position_result['success'] == True:
             matching_item_code = position_result['matching_item_code']
             if position_result['relative_position'] == 'forward':
-                new_pog_data.loc[len(new_pog_data)-1, 'position'] = (sorted_layer_items[sorted_layer_items['item_code'] == matching_item_code].iloc[0]['position'] - 0.5)      # 直接将新加入的商品插在前面（这里修改的列索引不知道为什么必须是len(new_pog_data)-1）
+                new_pog_data.loc[len(new_pog_data)-1, 'position'] = (sorted_layer_items[sorted_layer_items['item_code'] == matching_item_code].iloc[0]['position'] - 1)      # 直接将新加入的商品插在前面（这里修改的列索引不知道为什么必须是len(new_pog_data)-1）
             elif position_result['relative_position'] == 'backward':
-                new_pog_data.loc[len(new_pog_data)-1, 'position'] = (sorted_layer_items[sorted_layer_items['item_code'] == matching_item_code].iloc[0]['position'] + 0.5)   # 插在后面
+                new_pog_data.loc[len(new_pog_data)-1, 'position'] = (sorted_layer_items[sorted_layer_items['item_code'] == matching_item_code].iloc[0]['position'] + 1)   # 插在后面
         else:   # 层内定位失败
             {'success': False, 'error_msg': position_result['error_msg']}
     
@@ -459,8 +459,9 @@ def adjust_space_for_insertion(pog_data, item_code, item_width, target_module, t
     new_pog_data = pog_data.copy()
     layer_mask = (new_pog_data['module_id'] == target_module) & (new_pog_data['layer_id'] == target_layer)
     
-    # 策略1: 尝试减少double facing商品的facing
+    # 策略: 尝试减少double facing商品的facing
     double_facing_items = new_pog_data[layer_mask & (new_pog_data['facing'] > 1)]
+    # delete_items = []
     
     if not double_facing_items.empty:
         # 获取销售数据并排序（从低到高）
@@ -468,23 +469,27 @@ def adjust_space_for_insertion(pog_data, item_code, item_width, target_module, t
         
         for idx in sorted_items.index:
             # 减少一个facing
-            original_facing = new_pog_data.loc[idx, 'facing']
-            new_pog_data.loc[idx, 'facing'] = original_facing - 1
+            delete_item_code = sorted_items.loc[idx, 'item_code']
+            mask = new_pog_data['item_code'] == delete_item_code
+            original_facing = new_pog_data.loc[mask, 'facing']
+            new_pog_data.loc[mask, 'facing'] = original_facing - 1
             
             # 检查空间是否足够
-            layer_items_after_adjust = new_pog_data[layer_mask]
-            module_width = layer_items_after_adjust['module_width'].iloc[0]
-            used_space_after = layer_items_after_adjust['item_width'].sum()
-            remaining_space_after = module_width - used_space_after
+            remaining_space_after = calculate_layer_space(target_module, target_layer, new_pog_data)
             
             if remaining_space_after >= item_width:
                 # 空间足够，插入商品
                 result = insert_and_rearrange(new_pog_data, item_code, item_width, target_module, target_layer, matching_level, pog_info_dict, pog_config_org)
                 if result['success']:
-                    return {'success': True, 'new_pog_data': result['new_pog_data']}
+                    return {'success': True, 'new_pog_data': result['new_pog_data'], 
+                            'adjust_msg': f"商品{delete_item_code}的facing减一"}
             
             # 如果还是不够，恢复原状继续尝试下一个
             new_pog_data.loc[idx, 'facing'] = original_facing
+        # 若只减少一个facing不够，减少销售额最低的商品后再尝试减少一个
+        # delete_item_code = sorted_items.iloc[0].get(['item_code'])
+        # new_pog_data.loc[new_pog_data['item_code'] == delete_item_code, 'facing'] -= 1
+        # double_facing_items = new_pog_data[layer_mask & (new_pog_data['facing'] > 1)]
     
     # # 策略2: 删除销售最低的商品
     # layer_items = new_pog_data[layer_mask]
@@ -536,6 +541,7 @@ def get_sorted_items_by_sales(items_df, sales_data, ascending=True):
 if __name__ == "__main__":
     # 数据加载
     pog_result = pd.read_csv('pog_result.csv')
+    # pog_result = pd.read_csv('test_data/pog_result_test.csv')
     pog_test_haircare_tray_item = pd.read_csv('pog_test_haircare_tray_item.csv')
     pog_test_haircare_test = pd.read_csv('pog_test_haircare_test.csv')
     ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V = pd.read_csv('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
@@ -552,11 +558,11 @@ if __name__ == "__main__":
             'brand_2_brand_label': brand_2_brand_label,
             'sales_data': sales_item_sum
         },
-        'add_item': 101448023   # 托盘商品，理应报错
-        # 'add_item': 100020975   # 匹配等级：same_item
-        # 'add_item': 100006545  # 匹配等级：series
-        # 'add_item': 101437322   # 匹配等级：brand_label
+        # 'add_item': 101448023   # 托盘商品，理应报错
+        # 'add_item': 101184608   # 匹配等级：same_item
+        'add_item': 100006545  # 匹配等级：series
         # 'add_item': 101426154   # 匹配等级：brand
+        # 'add_item': 101437322   # 匹配等级：brand_label
     }
 
     # 读取config
@@ -570,7 +576,9 @@ if __name__ == "__main__":
     
     print(f"执行状态: {result['status']}")
     if result['status'] == 'success':
-        result['pog_data'].to_csv('add_pog_result.csv', index=False)
+        result['pog_data'].to_csv('test_data/add_pog_result.csv', index=False)
+        if result['adjust_msg'] != None:
+            print(result['adjust_msg'])
         print("商品添加成功！")
         print(f"新pog_data形状: {result['pog_data'].shape}")
     else:

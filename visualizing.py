@@ -144,18 +144,17 @@ def plot_layer_arrangement_rec(shelf_width, layer_items_df):
             )
             ax.add_patch(rect)
             
-            # 在每个商品内添加编号（只在前几个商品中添加，避免拥挤）
-            if i < 3:  # 只在前3个商品中显示编号
-                text_x = item_x + row['item_width'] / 2
-                text_y = item_y + rect_height / 2
-                ax.text(text_x, text_y, row['item_code'], 
-                       ha='center', va='center', fontsize=8, color='white', weight='bold')
+            # 在每个商品内添加编号
+            text_x = item_x + row['item_width'] / 2
+            text_y = item_y + rect_height / 2
+            ax.text(text_x, text_y, row['item_code'], 
+                    ha='center', va='center', fontsize=8, color='white', weight='bold')
         
         # 添加商品组信息标注
         text_x = row['position'] + total_width / 2
         text_y = y_position + rect_height/2 + 0.05
         
-        label = f"{row['brand']}\n{row['series']}\nrk:{int(row['segment_rank'])}"
+        label = f"{row['brand_label']}\n{row['brand']}\n{row['series']}\n{row['segment']}({int(row['segment_rank'])})"
         # if row['facing'] > 1:
         #     label += f" ×{row['facing']}"
             
@@ -186,7 +185,7 @@ def plot_layer_arrangement_rec(shelf_width, layer_items_df):
     return fig, ax
 
 # 可视化接口：输入三个数据文件、要可视化的module和layer编号、config文件
-def pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, target_module, target_layer, pog_config_org, option = 'rec'):
+def pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, brand_2_brand_label, target_module, target_layer, pog_config_org, option = 'rec'):
     layer_mask = (pog_data['module_id'] == target_module) & (pog_data['layer_id'] == target_layer)
     layer_items = pog_data[layer_mask]
     for idx in layer_items.index:
@@ -197,14 +196,19 @@ def pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, targe
         
         item_row = item_attributes[item_attributes['ITEM_NBR'] == int(item_code)]
         item_row_detail = item_attributes_detail[item_attributes_detail['item_idnt'] == int(item_code)]
-
-        series = item_row.iloc[0]['SERIES']
         brand = item_row_detail.iloc[0]['brandname_cn']
+        brand_row = brand_2_brand_label[brand_2_brand_label['brand'] == brand]
+
+        brand_label = brand_row.iloc[0]['brand_label']
+        series = item_row.iloc[0]['SERIES']
         segment = item_row_detail.iloc[0]['category_name']
         segment_rank_rule = pog_config_org['segment']['assign_brand_rank']
         segment_rank = segment_rank_rule[segment]
-        layer_items.loc[idx, 'series'] = series
+
+        layer_items.loc[idx, 'brand_label'] = brand_label
         layer_items.loc[idx, 'brand'] = brand
+        layer_items.loc[idx, 'series'] = series
+        layer_items.loc[idx, 'segment'] = segment
         layer_items.loc[idx, 'segment_rank'] = int(segment_rank)
     if option == 'rec':
         fig, ax = plot_layer_arrangement_rec(pog_config_org['global']['module_meter'][target_module - 1], layer_items)
@@ -227,15 +231,15 @@ if __name__ == "__main__":
     # df = pd.DataFrame(data)
     # shelf_width = 1800  # 毫米
     
-    # # 绘制两种版本的图形
     # # fig1 = plot_layer_arrangement(shelf_width, df)
     # fig2 = plot_layer_arrangement_rec(shelf_width, df)
     pog_data = pd.read_csv('pog_result.csv')
     item_attributes = pd.read_csv('pog_test_haircare_test.csv')
     item_attributes_detail = pd.read_csv('ADS_SPAM_SPACE_ITEM_ATTRIBUTE_WTCCN_V.csv')
+    brand_2_brand_label = pd.read_csv('brand_2_brand_label.csv')
     with open('config.txt', 'r', encoding='utf-8') as file:
         content = file.read()
     pog_config_org = eval(content)
-    pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, 2, 4, pog_config_org)
+    pog_layer_visualize(pog_data, item_attributes, item_attributes_detail, brand_2_brand_label, 2, 5, pog_config_org)
     
     plt.show()
